@@ -1,0 +1,12 @@
+import { chromium } from "playwright";
+const b = await chromium.launch();
+const p = await b.newPage();
+await p.setViewportSize({width:1400,height:900});
+const errs=[]; p.on("pageerror",e=>errs.push(e.message.slice(0,150)));
+await p.goto("http://localhost:1420",{waitUntil:"networkidle"}).catch(()=>{});
+await p.waitForTimeout(2500);
+await p.getByText("设置",{exact:false}).last().click({timeout:3000}).catch(()=>{});
+await p.waitForTimeout(1800);
+await p.screenshot({path:"/tmp/shots/kconf.png"});
+console.log("pageerrors:",errs.length); errs.slice(0,3).forEach(e=>console.log(e));
+await b.close();

@@ -1,0 +1,11 @@
+import { chromium } from "playwright";
+const b = await chromium.launch();
+const p = await b.newPage();
+p.on("response", async r => { const u=r.url(); if(u.includes("/api/mcp")){ let t=""; try{t=(await r.text()).slice(0,150)}catch{} console.log("RESP", u.replace("http://127.0.0.1:3789",""), "→", t);} });
+await p.goto("http://localhost:1420",{waitUntil:"networkidle"}).catch(()=>{});
+await p.waitForTimeout(2000);
+await p.getByText("设置",{exact:false}).last().click({timeout:3000}).catch(()=>{});
+await p.waitForTimeout(1000);
+await p.getByText("MCP",{exact:false}).first().click({timeout:3000}).catch(()=>{});
+await p.waitForTimeout(2000);
+await b.close();
