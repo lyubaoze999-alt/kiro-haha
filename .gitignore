@@ -4,3 +4,11 @@ target/
 cchaha-dist/
 *.log
 .DS_Store
+adapter/probe*.js
+adapter/permcheck.js
+adapter/imgcheck.js
+adapter/imgprobe.js
+adapter/permbtn.js
+adapter/loadbug.js
+adapter/cardtest.js
+adapter/permtest.js

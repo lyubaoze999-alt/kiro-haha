@@ -17,6 +17,7 @@ import { PermissionModeSelector } from '../controls/PermissionModeSelector'
 import { ModelSelector } from '../controls/ModelSelector'
 import type { AttachmentRef } from '../../types/chat'
 import { AttachmentGallery } from './AttachmentGallery'
+import { MessageQueue } from './MessageQueue'
 import { ComposerDropOverlay } from './ComposerDropOverlay'
 import { ProjectContextChip } from '../shared/ProjectContextChip'
 import { RepositoryLaunchControls } from '../shared/RepositoryLaunchControls'
@@ -636,6 +637,27 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       }
     }
 
+    // While the agent is still running, queue the message instead of sending it
+    // immediately. The MessageQueue UI above the composer shows pending entries
+    // so the user can drop or re-edit them; chatStore auto-flushes the queue
+    // when chatState transitions back to idle (or when Stop is pressed).
+    if (!isMemberSession && isActive) {
+      const queueAttachments: AttachmentRef[] = [
+        ...uploadAttachmentPayload,
+        ...workspaceAttachmentPayload,
+      ]
+      useChatStore.getState().enqueueMessage(
+        targetSessionId,
+        contentForModel,
+        queueAttachments.length > 0 ? queueAttachments : undefined,
+      )
+      setComposerInput('')
+      setComposerAttachments([])
+      useChatStore.getState().clearComposerDraft(activeTabId!)
+      if (targetSessionId !== activeTabId) useChatStore.getState().clearComposerDraft(targetSessionId)
+      return
+    }
+
     sendMessage(targetSessionId, contentForModel, [...uploadAttachmentPayload, ...workspaceAttachmentPayload], {
       displayContent,
       displayAttachments: visibleAttachmentPayload,
@@ -996,6 +1018,34 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                 </div>
               ) : null}
             </div>
+          )}
+
+          {!isMemberSession && activeTabId && (
+            isHeroComposer ? (
+              <MessageQueue
+                sessionId={activeTabId}
+                onEditQueued={(content, attachments) => {
+                  setComposerInput(content)
+                  if (Array.isArray(attachments)) {
+                    setComposerAttachments(attachments as Attachment[])
+                  }
+                  textareaRef.current?.focus()
+                }}
+              />
+            ) : (
+              <div className="px-3 pt-3">
+                <MessageQueue
+                  sessionId={activeTabId}
+                  onEditQueued={(content, attachments) => {
+                    setComposerInput(content)
+                    if (Array.isArray(attachments)) {
+                      setComposerAttachments(attachments as Attachment[])
+                    }
+                    textareaRef.current?.focus()
+                  }}
+                />
+              </div>
+            )
           )}
 
           {composerAttachments.length > 0 && (

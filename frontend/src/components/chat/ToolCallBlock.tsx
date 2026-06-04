@@ -8,8 +8,11 @@ import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
 import { InlineImageGallery } from './InlineImageGallery'
 import type { AgentTaskNotification } from '../../types/chat'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useChatSessionId } from './ChatSessionContext'
 
 type Props = {
+  sessionId?: string
   toolName: string
   input: unknown
   result?: { content: unknown; isError: boolean } | null
@@ -36,12 +39,20 @@ const TOOL_ICONS: Record<string, string> = {
 const WRITER_PREVIEW_MAX_LINES = 120
 const WRITER_PREVIEW_MAX_CHARS = 30000
 
-export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, result, compact = false, isPending = false, partialInput }: Props) {
+export const ToolCallBlock = memo(function ToolCallBlock({ sessionId: sessionIdProp, toolName, input, result, compact = false, isPending = false, partialInput }: Props) {
+  const sessionIdFromContext = useChatSessionId()
+  const sessionId = sessionIdProp ?? sessionIdFromContext
   const [expanded, setExpanded] = useState(false)
   const t = useTranslation()
   const obj = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const icon = TOOL_ICONS[toolName] || 'build'
-  const filePath = typeof obj.file_path === 'string' ? obj.file_path : ''
+  // Kiro CLI tools use `path`; Claude-style tools use `file_path`. Accept either.
+  const rawPath = typeof obj.file_path === 'string' && obj.file_path
+    ? obj.file_path
+    : typeof obj.path === 'string' && obj.path
+      ? obj.path
+      : ''
+  const filePath = rawPath
   const summary = getToolSummary(toolName, obj, t)
   const outputSummary = getToolResultSummary(
     toolName,
@@ -58,7 +69,28 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
   const hasResultDetails = Boolean(result && extractTextContent(result.content))
   const hasEditPreview = toolName === 'Edit' && typeof obj.old_string === 'string' && typeof obj.new_string === 'string'
   const hasWritePreview = toolName === 'Write' && typeof obj.content === 'string'
-  const expandable = hasEditPreview || hasWritePreview || hasResultDetails || Boolean(isPending && partialInput)
+  // File-tool chip: when this tool acts on a concrete file (any tool whose input has
+  // a `path`/`file_path`) and we know the session, the header itself is a clickable
+  // link that opens the file in the right-side workspace panel with format-aware
+  // rendering. We deliberately skip the inline code expansion in that case so chats
+  // stay readable. For edits / strReplace operations the panel opens the diff view.
+  const fileTool = !!filePath
+  const canOpenInPanel = fileTool && !!sessionId
+  const looksLikeEdit =
+    toolName === 'Edit' ||
+    typeof obj.old_string === 'string' ||
+    obj.command === 'strReplace' ||
+    obj.command === 'edit' ||
+    obj.command === 'replace'
+  const previewKind: 'file' | 'diff' = looksLikeEdit ? 'diff' : 'file'
+  const expandable = !canOpenInPanel && (hasEditPreview || hasWritePreview || hasResultDetails || Boolean(isPending && partialInput))
+  const handleHeaderClick = () => {
+    if (canOpenInPanel && sessionId) {
+      void useWorkspacePanelStore.getState().openPreview(sessionId, filePath, previewKind)
+      return
+    }
+    if (expandable) setExpanded((value) => !value)
+  }
 
   return (
     <div className={`overflow-hidden rounded-lg border border-[var(--color-border)]/50 bg-[var(--color-surface-container-lowest)] ${
@@ -66,11 +98,8 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
     }`}>
       <button
         type="button"
-        onClick={() => {
-          if (expandable) {
-            setExpanded((value) => !value)
-          }
-        }}
+        onClick={handleHeaderClick}
+        title={canOpenInPanel ? `在右侧打开 ${filePath}` : undefined}
         className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]/50"
       >
         <span className="material-symbols-outlined text-[14px] text-[var(--color-outline)]">{icon}</span>
@@ -78,8 +107,12 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
           {toolName}
         </span>
         {filePath ? (
-          <span className="min-w-0 flex-1 truncate font-[var(--font-mono)] text-[11px] text-[var(--color-text-tertiary)]">
-            {filePath.split('/').pop()}
+          <span className={`min-w-0 flex-1 truncate font-[var(--font-mono)] text-[11px] ${
+            canOpenInPanel
+              ? 'text-[var(--color-text-accent)] underline decoration-dotted underline-offset-2 group-hover:decoration-solid'
+              : 'text-[var(--color-text-tertiary)]'
+          }`}>
+            {canOpenInPanel ? filePath : filePath.split('/').pop()}
           </span>
         ) : summary ? (
           <span className="min-w-0 flex-1 truncate font-[var(--font-mono)] text-[11px] text-[var(--color-text-tertiary)]">
@@ -107,11 +140,13 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
         {result?.isError && (
           <span className="material-symbols-outlined shrink-0 text-[14px] text-[var(--color-error)]">error</span>
         )}
-        {expandable && (
+        {canOpenInPanel ? (
+          <span className="material-symbols-outlined shrink-0 text-[14px] text-[var(--color-outline)]">open_in_new</span>
+        ) : expandable ? (
           <span className="material-symbols-outlined text-[14px] text-[var(--color-outline)]">
             {expanded ? 'expand_less' : 'expand_more'}
           </span>
-        )}
+        ) : null}
       </button>
 
       {expandable && expanded && (

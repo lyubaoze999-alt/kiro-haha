@@ -54,7 +54,7 @@ export type UIAttachment = {
 // ─── Server → Client ──────────────────────────────────────────────
 
 export type ServerMessage =
-  | { type: 'connected'; sessionId: string }
+  | { type: 'connected'; sessionId: string; runtimeSelection?: { modelId?: string; providerId?: string | null } | null; acpSessionId?: string }
   | { type: 'content_start'; blockType: 'text' | 'tool_use'; toolName?: string; toolUseId?: string; parentToolUseId?: string }
   | { type: 'content_delta'; text?: string; toolInput?: string }
   | { type: 'tool_use_complete'; toolName: string; toolUseId: string; input: unknown; parentToolUseId?: string }

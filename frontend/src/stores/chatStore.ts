@@ -53,6 +53,13 @@ export type ComposerReferenceInsertion = {
   nonce: number
 }
 
+export type QueuedMessage = {
+  id: string
+  content: string
+  attachments?: AttachmentRef[]
+  enqueuedAt: number
+}
+
 export type PerSessionState = {
   messages: UIMessage[]
   chatState: ChatState
@@ -89,6 +96,7 @@ export type PerSessionState = {
     attachments?: UIAttachment[]
     nonce: number
   } | null
+  messageQueue?: QueuedMessage[]
   composerInsertion?: ComposerReferenceInsertion | null
   composerDraft?: ComposerDraftState | null
 }
@@ -118,6 +126,7 @@ const DEFAULT_SESSION_STATE: PerSessionState = {
   composerPrefill: null,
   composerInsertion: null,
   composerDraft: null,
+  messageQueue: [],
 }
 
 function createDefaultSessionState(): PerSessionState {
@@ -153,6 +162,10 @@ type ChatStore = {
   setSessionRuntime: (sessionId: string, selection: RuntimeSelection) => void
   setSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void
   stopGeneration: (sessionId: string) => void
+  enqueueMessage: (sessionId: string, content: string, attachments?: AttachmentRef[]) => void
+  removeQueuedMessage: (sessionId: string, id: string) => void
+  clearMessageQueue: (sessionId: string) => void
+  flushQueuedMessage: (sessionId: string) => boolean
   loadHistory: (sessionId: string) => Promise<void>
   reloadHistory: (sessionId: string) => Promise<void>
   queueComposerPrefill: (
@@ -673,6 +686,8 @@ function needsTranscriptIdHydrationRetry(session: PerSessionState | undefined): 
   return false
 }
 
+// Kept for potential future re-enable; currently unused after rollback.
+// @ts-ignore - unused after disabling auto-reload after message_complete
 function refreshCompletedTranscriptHistory(
   get: () => ChatStore,
   sessionId: string,
@@ -1031,6 +1046,50 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     wsManager.send(sessionId, { type: 'set_permission_mode', mode })
   },
 
+  enqueueMessage: (sessionId, content, attachments) => {
+    if (!get().sessions[sessionId]) return
+    const item: QueuedMessage = {
+      id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      content,
+      attachments,
+      enqueuedAt: Date.now(),
+    }
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (s) => ({
+        messageQueue: [...(s.messageQueue ?? []), item],
+      })),
+    }))
+  },
+
+  removeQueuedMessage: (sessionId, id) => {
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (s) => ({
+        messageQueue: (s.messageQueue ?? []).filter((m) => m.id !== id),
+      })),
+    }))
+  },
+
+  clearMessageQueue: (sessionId) => {
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, () => ({ messageQueue: [] })),
+    }))
+  },
+
+  flushQueuedMessage: (sessionId) => {
+    const session = get().sessions[sessionId]
+    if (!session) return false
+    const queue = session.messageQueue ?? []
+    if (queue.length === 0) return false
+    if (session.chatState !== 'idle') return false
+    const [next, ...rest] = queue
+    if (!next) return false
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, () => ({ messageQueue: rest })),
+    }))
+    get().sendMessage(sessionId, next.content, next.attachments)
+    return true
+  },
+
   stopGeneration: (sessionId) => {
     wsManager.send(sessionId, { type: 'stop_generation' })
     if (pendingDeltaBySession.has(sessionId)) {
@@ -1056,6 +1115,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         },
       }
     })
+    // Auto-flush queued messages — user may have stacked replies while agent ran;
+    // pressing Stop is a clear signal to "abort and run the next thing".
+    setTimeout(() => { try { get().flushQueuedMessage(sessionId) } catch {} }, 50)
   },
 
   loadHistory: async (sessionId) => {
@@ -1271,8 +1333,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
 
     switch (msg.type) {
-      case 'connected':
+      case 'connected': {
+        // Server may report the persisted runtime selection (model) for the actual
+        // ACP session UUID. If the local store has nothing for this sessionId, copy
+        // it in so the model chip and prompts use the right model.
+        const stored = msg.runtimeSelection
+        if (stored?.modelId) {
+          const { selections, setSelection } = useSessionRuntimeStore.getState()
+          if (!selections[sessionId] || selections[sessionId].modelId !== stored.modelId) {
+            setSelection(sessionId, { providerId: stored.providerId ?? null, modelId: stored.modelId })
+          }
+        }
         break
+      }
 
       case 'status':
         update((session) => {
@@ -1646,7 +1719,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             target: { type: 'session', sessionId },
           })
         }
-        refreshCompletedTranscriptHistory(get, sessionId)
+        // [kiro-haha rollback] disabled: loadHistory after message_complete races
+        // with the JSONL cache (kiro hasn't fully flushed the new turn) and the
+        // merge logic ends up wiping the freshly-streamed messages from the UI.
+        // Live messages from the WS stream are sufficient for display.
+        // refreshCompletedTranscriptHistory(get, sessionId)
+        // Auto-flush queued messages after a turn completes — Codex-style queue.
+        // Wait a tick so the chatState=idle update from status event applies first.
+        setTimeout(() => { try { get().flushQueuedMessage(sessionId) } catch {} }, 50)
         break
       }
 

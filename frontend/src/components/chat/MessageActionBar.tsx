@@ -1,4 +1,4 @@
-import { Check, Copy, GitFork } from 'lucide-react'
+import { Check, Copy, GitFork, Pencil } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { formatExactMessageTimestamp, formatMessageTimestamp } from '../../lib/formatMessageTimestamp'
@@ -16,6 +16,10 @@ type Props = {
   branchAction?: MessageBranchAction
   align?: 'start' | 'end'
   timestamp?: number
+  /** Optional "restore to composer" action — drops the message text back into the
+   *  composer for re-editing. Used on user messages so users can tweak & resend. */
+  onEdit?: () => void
+  editLabel?: string
 }
 
 export function MessageActionBar({
@@ -24,6 +28,8 @@ export function MessageActionBar({
   branchAction,
   align = 'start',
   timestamp,
+  onEdit,
+  editLabel,
 }: Props) {
   const t = useTranslation()
   const locale = useSettingsStore((state) => state.locale)
@@ -35,7 +41,7 @@ export function MessageActionBar({
     ? formatExactMessageTimestamp(timestamp, locale)
     : ''
 
-  if (!hasCopy && !branchAction) return null
+  if (!hasCopy && !branchAction && !onEdit) return null
 
   return (
     <div
@@ -55,6 +61,18 @@ export function MessageActionBar({
             onPointerUp={(event) => event.currentTarget.blur()}
             className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-brand)]/30 hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35"
           />
+        ) : null}
+        {onEdit ? (
+          <button
+            type="button"
+            onClick={onEdit}
+            aria-label={editLabel || '重新编辑'}
+            title={editLabel || '重新编辑'}
+            onPointerUp={(event) => event.currentTarget.blur()}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-brand)]/30 hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35"
+          >
+            <Pencil size={13} strokeWidth={2.2} aria-hidden="true" />
+          </button>
         ) : null}
         {branchAction ? (
           <button

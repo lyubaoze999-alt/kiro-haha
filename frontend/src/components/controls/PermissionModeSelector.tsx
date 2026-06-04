@@ -87,9 +87,13 @@ export function PermissionModeSelector({ workDir: workDirProp, compact = false, 
   const activeSession = activeTabId
     ? sessions.find((s) => s.id === activeTabId)
     : null
-  const currentMode = isControlled
+  const rawMode = isControlled
     ? value
     : (activeSession?.permissionMode as PermissionMode | undefined) || storeMode
+  const VALID_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk']
+  const currentMode: PermissionMode = (rawMode && VALID_MODES.includes(rawMode as PermissionMode))
+    ? (rawMode as PermissionMode)
+    : 'default'
   const workDir = workDirProp || activeSession?.workDir || '~'
   const compactButtonClass = compact
     ? isMobile

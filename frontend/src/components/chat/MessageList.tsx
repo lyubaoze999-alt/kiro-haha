@@ -15,6 +15,7 @@ import { AssistantMessage } from './AssistantMessage'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallGroup } from './ToolCallGroup'
+import { ChatSessionProvider } from './ChatSessionContext'
 import { ToolResultBlock } from './ToolResultBlock'
 import { PermissionDialog } from './PermissionDialog'
 import { AskUserQuestion } from './AskUserQuestion'
@@ -1714,6 +1715,30 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
     t,
   ])
 
+  // Pencil button on a user message → Kiro IDE-style rewind: drop everything
+  // after this turn, surface the prompt back into the composer for editing.
+  const handleRewindToTarget = useCallback(async (target: RewindTurnTarget) => {
+    if (!resolvedSessionId || rewindingTurnId) return
+    setRewindingTurnId(target.messageId)
+    try {
+      if (chatState !== 'idle') stopGeneration(resolvedSessionId)
+      await sessionsApi.rewind(resolvedSessionId, {
+        targetUserMessageId: target.messageId,
+        userMessageIndex: target.userMessageIndex,
+        expectedContent: target.expectedContent,
+      })
+      await reloadHistory(resolvedSessionId)
+      queueComposerPrefill(resolvedSessionId, {
+        text: target.content,
+        attachments: target.attachments,
+      })
+    } catch (error) {
+      addToast({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setRewindingTurnId(null)
+    }
+  }, [addToast, chatState, queueComposerPrefill, reloadHistory, resolvedSessionId, rewindingTurnId, stopGeneration])
+
   const handleBranchMessage = useCallback(async (target: BranchableMessageTarget) => {
     if (!resolvedSessionId || branchingMessageId) return
 
@@ -1792,6 +1817,15 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
                 : null
             }
             branchAction={branchActionByMessageId.get(item.message.id)}
+            rewindAction={
+              item.message.type === 'user_text'
+                ? (() => {
+                    const target = completedTurnTargets.find((c) => c.messageId === item.message.id)
+                    if (!target) return undefined
+                    return () => { void handleRewindToTarget(target) }
+                  })()
+                : undefined
+            }
           />
         )}
 
@@ -1814,6 +1848,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
   }
 
   return (
+    <ChatSessionProvider value={resolvedSessionId ?? undefined}>
     <div className="relative min-h-0 flex-1">
       <div
         ref={scrollContainerRef}
@@ -1862,8 +1897,11 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
           {/* Show StreamingIndicator when:
               - tool_executing: background work is running
               - thinking but no active ThinkingBlock yet: the gap between
-                sending a message and receiving the first thinking delta */}
-          {(chatState === 'tool_executing' || (chatState === 'thinking' && !activeThinkingId)) && (
+                sending a message and receiving the first thinking delta
+              - streaming: text is being chunked; long pauses between chunks
+                otherwise look frozen ("卡住"). The indicator shows the agent
+                is still alive and how long it's been working. */}
+          {(chatState === 'tool_executing' || chatState === 'streaming' || (chatState === 'thinking' && !activeThinkingId)) && (
             <StreamingIndicator />
           )}
 
@@ -1912,6 +1950,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
         loading={Boolean(rewindingTurnId)}
       />
     </div>
+    </ChatSessionProvider>
   )
 }
 
@@ -1922,6 +1961,7 @@ export const MessageBlock = memo(function MessageBlock({
   agentTaskNotifications,
   toolResult,
   branchAction,
+  rewindAction,
 }: {
   sessionId?: string | null
   message: UIMessage
@@ -1933,6 +1973,7 @@ export const MessageBlock = memo(function MessageBlock({
     loading?: boolean
     onBranch: () => void
   }
+  rewindAction?: () => void
 }) {
   const t = useTranslation()
 
@@ -1950,6 +1991,12 @@ export const MessageBlock = memo(function MessageBlock({
             attachments={message.attachments}
             branchAction={branchAction}
             timestamp={message.timestamp}
+            onEdit={rewindAction ?? (sessionId ? () => {
+              useChatStore.getState().queueComposerPrefill(sessionId, {
+                text: message.content,
+                attachments: message.attachments,
+              })
+            } : undefined)}
           />
         </SelectableChatMessage>
       )

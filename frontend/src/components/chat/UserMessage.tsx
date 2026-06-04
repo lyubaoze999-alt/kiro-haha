@@ -8,9 +8,10 @@ type Props = {
   attachments?: UIAttachment[]
   branchAction?: MessageBranchAction
   timestamp?: number
+  onEdit?: () => void
 }
 
-export const UserMessage = memo(function UserMessage({ content, attachments, branchAction, timestamp }: Props) {
+export const UserMessage = memo(function UserMessage({ content, attachments, branchAction, timestamp, onEdit }: Props) {
   const hasText = content.trim().length > 0
 
   return (
@@ -45,6 +46,8 @@ export const UserMessage = memo(function UserMessage({ content, attachments, bra
             branchAction={branchAction}
             align="end"
             timestamp={timestamp}
+            onEdit={onEdit}
+            editLabel="重新编辑并发送"
           />
         )}
       </div>
