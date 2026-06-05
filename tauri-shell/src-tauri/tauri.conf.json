@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "kiro-haha",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.lvbaoze.kiro-haha",
   "build": {
     "frontendDist": "../cchaha-dist"
@@ -23,6 +23,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": [
       "adapter/**/*"
     ],
@@ -44,6 +45,12 @@
           "cmd": "kiro-cli",
           "args": true
         }
+      ]
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY3MTcyNEQxQjYxMjA5OUIKUldTYkNSSzIwU1FYWjJpbHBNME14Y3ljR1lkOWs0NEt0c09KRUNVRmh5VkF2bnRYeXo3RFJGQ3YK",
+      "endpoints": [
+        "https://github.com/lyubaoze999-alt/kiro-haha/releases/latest/download/latest.json"
       ]
     }
   }

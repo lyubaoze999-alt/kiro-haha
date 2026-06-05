@@ -11,6 +11,7 @@ type Connection = {
   pingInterval: ReturnType<typeof setInterval> | null
   intentionalClose: boolean
   pendingMessages: ClientMessage[]
+  lastConnectedFrame: ServerMessage | null
 }
 
 class WebSocketManager {
@@ -49,6 +50,7 @@ class WebSocketManager {
       pingInterval: null,
       intentionalClose: false,
       pendingMessages: existing?.pendingMessages ?? [],
+      lastConnectedFrame: null,
     }
     this.connections.set(sessionId, conn)
 
@@ -64,8 +66,11 @@ class WebSocketManager {
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string) as ServerMessage
+        if (msg.type === 'connected') {
+          conn.lastConnectedFrame = msg
+        }
         for (const handler of conn.handlers) {
-          handler(msg)
+          try { handler(msg) } catch {}
         }
       } catch {
         // Ignore malformed messages
@@ -95,6 +100,7 @@ class WebSocketManager {
       conn.reconnectTimer = null
     }
     conn.pendingMessages = []
+    conn.lastConnectedFrame = null
 
     conn.ws.close()
     this.connections.delete(sessionId)
@@ -135,6 +141,11 @@ class WebSocketManager {
     const conn = this.connections.get(sessionId)
     if (!conn) return () => {}
     conn.handlers.add(handler)
+    if (conn.ws.readyState === WebSocket.OPEN && conn.lastConnectedFrame !== null) {
+      queueMicrotask(() => {
+        try { handler(conn.lastConnectedFrame!) } catch {}
+      })
+    }
     return () => { conn.handlers.delete(handler) }
   }
 

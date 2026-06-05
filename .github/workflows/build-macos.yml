@@ -62,7 +62,37 @@ jobs:
         run: cd tauri-shell && npm install
 
       - name: Build Tauri app (macOS)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cd tauri-shell && npm run tauri build
+
+      - name: Generate latest.json (macOS arm64)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUNDLE=tauri-shell/src-tauri/target/release/bundle/macos
+          TARBALL=$(ls "$BUNDLE"/*.app.tar.gz | head -1)
+          SIG=$(cat "${TARBALL}.sig")
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          FILENAME=$(basename "$TARBALL")
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > latest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "See release notes on GitHub.",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIG}",
+                "url": "${BASE_URL}/${FILENAME}"
+              }
+            }
+          }
+          EOF
+          echo "--- latest.json ---"
+          cat latest.json
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -70,6 +100,9 @@ jobs:
           name: kiro-haha-macos
           path: |
             tauri-shell/src-tauri/target/release/bundle/dmg/*.dmg
+            tauri-shell/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            tauri-shell/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+            latest.json
 
       - name: Attach to release (on tag push)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -77,3 +110,6 @@ jobs:
         with:
           files: |
             tauri-shell/src-tauri/target/release/bundle/dmg/*.dmg
+            tauri-shell/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            tauri-shell/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+            latest.json

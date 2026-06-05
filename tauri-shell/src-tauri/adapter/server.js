@@ -18,8 +18,28 @@ try { TITLE_OVERRIDES = JSON.parse(fs.readFileSync(TITLES_FILE, "utf8")); } catc
 function saveTitles() { try { fs.writeFileSync(TITLES_FILE, JSON.stringify(TITLE_OVERRIDES)); } catch {} }
 
 function kiroBin() {
-  try { return execSync("which kiro-cli").toString().trim() || "kiro-cli"; }
-  catch { return path.join(HOME, ".local/bin/kiro-cli"); }
+  const probe = process.platform === "win32" ? "where" : "which";
+  try {
+    const out = execSync(`${probe} kiro-cli`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    // `where` may print multiple lines; pick the first.
+    const first = out.split(/\r?\n/)[0]?.trim();
+    if (first) return first;
+  } catch {}
+  // Cross-platform fallbacks.
+  const candidates = process.platform === "win32"
+    ? [
+        path.join(HOME, "AppData/Local/Programs/kiro-cli/kiro-cli.exe"),
+        path.join(HOME, ".local/bin/kiro-cli.exe"),
+        "kiro-cli.exe",
+      ]
+    : [
+        path.join(HOME, ".local/bin/kiro-cli"),
+        "/usr/local/bin/kiro-cli",
+        "/opt/homebrew/bin/kiro-cli",
+        "kiro-cli",
+      ];
+  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch {} }
+  return process.platform === "win32" ? "kiro-cli.exe" : "kiro-cli";
 }
 const KIRO = kiroBin();
 
@@ -32,6 +52,34 @@ function sqlite(sql) {
 
 // ---------- sessions from kiro sqlite ----------
 const CLI_SESSIONS_DIR = path.join(HOME, ".kiro/sessions/cli");
+// Sweep stale .lock files at startup: a `.lock` is created by kiro-cli ACP child
+// processes; if the parent adapter was killed with SIGKILL the child may have
+// died too and left an orphan lock. Trying to session/load again then fails with
+// "Session is active in another process" → 0-credits silent failure on the UI.
+// We check each lock's pid; if the process no longer exists, we remove the lock.
+function cleanupStaleSessionLocks() {
+  let removed = 0;
+  try {
+    for (const f of fs.readdirSync(CLI_SESSIONS_DIR)) {
+      if (!f.endsWith(".lock")) continue;
+      const fp = path.join(CLI_SESSIONS_DIR, f);
+      try {
+        const raw = fs.readFileSync(fp, "utf8");
+        const j = JSON.parse(raw);
+        const pid = Number(j.pid);
+        if (!Number.isFinite(pid)) { fs.unlinkSync(fp); removed++; continue; }
+        // process.kill(pid, 0) → ESRCH means process is gone.
+        try { process.kill(pid, 0); }
+        catch (e) {
+          if (e.code === "ESRCH") { fs.unlinkSync(fp); removed++; }
+        }
+      } catch { /* unreadable lock; leave it alone */ }
+    }
+  } catch { /* sessions dir missing; fine */ }
+  if (removed > 0) console.log(`[adapter] swept ${removed} stale session lock(s)`);
+}
+cleanupStaleSessionLocks();
+
 function readCliSessionFiles() {
   const out = [];
   try {
@@ -62,6 +110,10 @@ function readCliSessionFiles() {
   return out;
 }
 function listSessions() {
+  // Re-read settings.json so the permissionMode field on each session reflects
+  // the latest value (acp.js writes it on set_permission_mode).
+  try { Object.assign(USER_SETTINGS, JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"))); } catch {}
+  const curMode = USER_SETTINGS.permissionMode || "default";
   const rows = sqlite(
     "SELECT key AS cwd, conversation_id AS id, " +
     "substr(json_extract(value,'$.history[0].user.content.Prompt.prompt'),1,80) AS title, " +
@@ -78,10 +130,11 @@ function listSessions() {
     createdAt: new Date(r.createdAt || r.updatedAt).toISOString(),
     modifiedAt: new Date(r.updatedAt).toISOString(),
     status: "idle",
+    permissionMode: curMode,
   }));
   const seen = new Set(v2.map((s) => s.id));
   const merged = [...v2];
-  for (const s of readCliSessionFiles()) if (!seen.has(s.id)) { seen.add(s.id); merged.push(s); }
+  for (const s of readCliSessionFiles()) if (!seen.has(s.id)) { seen.add(s.id); merged.push({ ...s, permissionMode: curMode }); }
   merged.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
   return merged;
 }
@@ -223,6 +276,24 @@ const server = http.createServer(async (req, res) => {
   const seg = url.pathname.split("/").filter(Boolean); console.log("REQ",req.method,url.pathname);
   if (req.method === "OPTIONS") { res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "*", "Access-Control-Allow-Headers": "*" }); return res.end(); }
   if (url.pathname === "/health") return json(res, { status: "ok", ready: true });
+
+  // Static file routes for in-app browser webview (cc-haha contract).
+  // /preview-fs/:sessionId/<rest>: serve files inside the session's cwd (sandboxed).
+  // /local-file/<abs>: serve any absolute file under $HOME (sandboxed).
+  if (url.pathname.startsWith("/preview-fs/")) {
+    const m = url.pathname.match(/^\/preview-fs\/([^/]+)\/(.*)$/);
+    if (!m) { res.writeHead(400); return res.end("bad preview-fs url"); }
+    const sid = decodeURIComponent(m[1]);
+    const rel = decodeURIComponent(m[2] || "index.html");
+    const cwd = sessionInfoCwd(sid);
+    if (!cwd || !fs.existsSync(cwd)) { res.writeHead(404); return res.end("session cwd unknown"); }
+    return servePreviewFile(res, path.join(cwd, rel), cwd);
+  }
+  if (url.pathname.startsWith("/local-file/")) {
+    const abs = decodeURIComponent(url.pathname.slice("/local-file".length)) || "/";
+    return servePreviewFile(res, abs, HOME);
+  }
+
   const r = seg[1];
 
   try {
@@ -248,8 +319,10 @@ const server = http.createServer(async (req, res) => {
       if (seg[2] && seg[3] === "messages") return json(res, { messages: conversationMessages(seg[2]) });
       if (seg[2] && seg[3] === "slash-commands") return json(res, { commands: SLASH });
       if (seg[2] && seg[3] === "git-info") return json(res, gitInfo(sessionInfoCwd(seg[2])));
-      if (seg[2] && seg[3] === "workspace") return json(res, workspace(seg[4], sessionInfoCwd(seg[2]), url.searchParams.get("path") || ""));
+      if (seg[2] && seg[3] === "workspace") return json(res, workspace(seg[4], sessionInfoCwd(seg[2]), url.searchParams.get("path") || "", seg[2]));
       if (seg[2] && seg[3] === "inspection") {
+        // Re-read settings so the latest permissionMode (written by acp.js) shows up.
+        try { Object.assign(USER_SETTINGS, JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"))); } catch {}
         const ctx = contextSnapshot(seg[2]);
         const meta = SESSION_META.get(seg[2]) || {};
         return json(res, {
@@ -262,11 +335,35 @@ const server = http.createServer(async (req, res) => {
       }
       if (seg[2] && seg[3] === "turn-checkpoints") {
         const id = seg[2];
-        const userMsgs = messagesFromJsonl(id).filter((m) => m.type === "user");
-        const total = userMsgs.length;
-        const checkpoints = userMsgs.map((m, i) => ({
-          target: { targetUserMessageId: m.id, userMessageIndex: i, userMessageCount: total },
-          code: { available: false, reason: "unsupported", filesChanged: [], insertions: 0, deletions: 0 },
+        const all = messagesFromJsonl(id);
+        // Slice messages into per-turn groups (one user message + everything until the next user).
+        // For each group, collect file paths from all tool_use entries whose input has `path` or `file_path`.
+        // Treat any tool with such an input field as a file-touching tool — matches cc-haha's ToolCallBlock heuristic.
+        const groups = [];
+        let cur = null;
+        for (const m of all) {
+          if (m.type === "user") { cur = { user: m, paths: new Set() }; groups.push(cur); continue; }
+          if (!cur) continue;
+          if (m.type === "assistant" && Array.isArray(m.content)) {
+            for (const block of m.content) {
+              if (block?.type !== "tool_use") continue;
+              const inp = block.input || {};
+              const p = (typeof inp.path === "string" && inp.path)
+                || (typeof inp.file_path === "string" && inp.file_path)
+                || null;
+              if (p) cur.paths.add(p);
+            }
+          }
+        }
+        const total = groups.length;
+        const checkpoints = groups.map((g, i) => ({
+          target: { targetUserMessageId: g.user.id, userMessageIndex: i, userMessageCount: total },
+          code: {
+            available: g.paths.size > 0,
+            reason: g.paths.size > 0 ? "ok" : "no-changes",
+            filesChanged: [...g.paths],
+            insertions: 0, deletions: 0,
+          },
         }));
         return json(res, { checkpoints });
       }
@@ -351,7 +448,7 @@ const server = http.createServer(async (req, res) => {
       if (seg[2] && seg[3] === "status") return json(res, { server: listMcp(cwd).find((s) => s.name === decodeURIComponent(seg[2])) || null });
       if (seg[2] && seg[3] === "toggle" && req.method === "POST") {
         const body = await readBody(req);
-        mcpToggle(decodeURIComponent(seg[2]), body.enabled);
+        mcpToggle(decodeURIComponent(seg[2]), body.enabled, body.cwd || cwd);
         return json(res, { server: listMcp(cwd).find((s) => s.name === decodeURIComponent(seg[2])) || null });
       }
       if (seg.length === 2 && req.method === "POST") {
@@ -547,8 +644,21 @@ function listMcp(cwd) {
   if (cwd) out.push(...readMcpFile(projectMcpFile(cwd), "project", cwd));
   return out;
 }
-function mcpToggle(name, enabled) {
-  try { const cfg = JSON.parse(fs.readFileSync(MCP_JSON, "utf8")); if (cfg.mcpServers?.[name]) { cfg.mcpServers[name].disabled = !enabled; fs.writeFileSync(MCP_JSON, JSON.stringify(cfg, null, 2)); } } catch {}
+function mcpToggle(name, enabled, cwd) {
+  // Resolve target file: project-level if cwd provided and file exists, else global.
+  const projectFile = cwd ? path.join(cwd, ".kiro/settings/mcp.json") : null;
+  const target = (projectFile && fs.existsSync(projectFile)) ? projectFile : MCP_JSON;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(target, "utf8"));
+    if (!cfg.mcpServers?.[name]) return;
+    // If `enabled` is provided explicitly use it; otherwise flip current state (toggle semantics).
+    if (typeof enabled === "boolean") {
+      cfg.mcpServers[name].disabled = !enabled;
+    } else {
+      cfg.mcpServers[name].disabled = !cfg.mcpServers[name].disabled;
+    }
+    fs.writeFileSync(target, JSON.stringify(cfg, null, 2));
+  } catch {}
 }
 function mcpRemove(name) {
   try { const cfg = JSON.parse(fs.readFileSync(MCP_JSON, "utf8")); if (cfg.mcpServers) { delete cfg.mcpServers[name]; fs.writeFileSync(MCP_JSON, JSON.stringify(cfg, null, 2)); } } catch {}
@@ -600,8 +710,16 @@ wss.on("connection", (ws, req) => {
   // start a fresh session instead of trying to load a non-existent conversation (which hangs).
   const resumeId = (meta || sessionId.startsWith("new-")) ? null : sessionId; // else existing kiro conversation → load
   let agent = meta?.agent;
-  if (!resumeId && hooksConfigured() && (!agent || agent === "kiro_default")) agent = ensureHookAgent();
-  startAcpBridge({ ws, sessionId, cwd, model: meta?.model, agent, resumeId, permissionMode: meta?.permissionMode, kiro: KIRO });
+  if (!resumeId && (!agent || agent === "kiro_default")) {
+    // Always use kiro-haha agent on new sessions so the skill index in its prompt is loaded.
+    // (Was previously only when hooksConfigured(); but skills need this even without hooks.)
+    syncSkillIndexToHookAgent();
+    agent = ensureHookAgent();
+  }
+  // Re-read settings from disk so that permissionMode persisted by acp.js (set_permission_mode)
+  // is picked up on the next WS connect, even if this server.js process never received the PATCH.
+  try { Object.assign(USER_SETTINGS, JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"))); } catch {}
+  startAcpBridge({ ws, sessionId, cwd, model: meta?.model, agent, resumeId, permissionMode: meta?.permissionMode || USER_SETTINGS.permissionMode, kiro: KIRO });
 });
 
 function steeringDir(base) { return path.join(base, ".kiro/steering"); }
@@ -621,6 +739,39 @@ function ensureHookAgent() {
   }
   return HOOK_AGENT;
 }
+
+// Sync skill discovery into the kiro-haha agent's resources field using kiro's
+// official `skill://` URI scheme. This is exactly how kiro IDE / kiro_default agent
+// loads skills: progressive disclosure — startup loads only name+description per
+// SKILL.md frontmatter; full body loads only when description matches the user's
+// request. Near-zero token overhead per turn.
+//
+// Why we need this: custom agents don't auto-load skills. Our `kiro-haha` is a
+// custom agent (we use it for hooks). Without this, users see "skill not found".
+function syncSkillIndexToHookAgent() {
+  try {
+    ensureHookAgent();
+    const agent = readHookAgent();
+    const wantResources = [
+      "skill://.kiro/skills/*/SKILL.md",
+      "skill://~/.kiro/skills/*/SKILL.md",
+    ];
+    const cur = Array.isArray(agent.resources) ? agent.resources : [];
+    // Strip any prior full-text skill index from prompt (cleanup from earlier impl).
+    if (typeof agent.prompt === "string" && agent.prompt.includes(SKILL_INDEX_START)) {
+      agent.prompt = agent.prompt.replace(new RegExp(SKILL_INDEX_START + "[\\s\\S]*?" + SKILL_INDEX_END), "").trim() || null;
+    }
+    // Merge skill:// URIs into resources without duplicates.
+    const next = [...cur.filter((r) => !wantResources.includes(r)), ...wantResources];
+    if (JSON.stringify(next) === JSON.stringify(cur) && agent.prompt === readHookAgent().prompt) return;
+    agent.resources = next;
+    fs.writeFileSync(HOOK_AGENT_FILE, JSON.stringify(agent, null, 2));
+    console.log(`[adapter] kiro-haha agent.resources synced (${next.length} entries)`);
+  } catch (e) { console.warn("[adapter] skill resources sync failed:", e?.message || e); }
+}
+const SKILL_INDEX_START = "<!-- KIRO-HAHA-SKILL-INDEX-START -->";
+const SKILL_INDEX_END = "<!-- KIRO-HAHA-SKILL-INDEX-END -->";
+syncSkillIndexToHookAgent();
 function getHooks() { const h = readHookAgent().hooks || {}; return Object.fromEntries(HOOK_TRIGGERS.map((t) => [t, h[t] || []])); }
 function setHooks(hooks) {
   const agent = readHookAgent();
@@ -723,8 +874,30 @@ function gitInfo(cwd) {
   } catch { return { branch: null, repoName: null, workDir: cwd, changedFiles: 0, worktree: null, isRepo: false }; }
 }
 
-function workspace(kind, cwd, rel) {
-  const abs = rel ? (path.isAbsolute(rel) ? rel : path.join(cwd || HOME, rel)) : (cwd || HOME);
+function workspace(kind, cwd, rel, sessionId) {
+  let abs = rel ? (path.isAbsolute(rel) ? rel : path.join(cwd || HOME, rel)) : (cwd || HOME);
+  // Fallback: if relative path resolved against cwd doesn't exist (e.g. cli session cwd=HOME but
+  // file actually lives elsewhere), scan the session's jsonl for a tool_use path that endsWith(rel).
+  if (rel && !path.isAbsolute(rel) && !fs.existsSync(abs) && sessionId) {
+    try {
+      const all = messagesFromJsonl(sessionId);
+      const want = "/" + rel.replace(/^\.?\//, "");
+      let found = null;
+      // Prefer the most recent matching path.
+      for (let i = all.length - 1; i >= 0 && !found; i--) {
+        const m = all[i];
+        if (m.type !== "assistant" || !Array.isArray(m.content)) continue;
+        for (const b of m.content) {
+          if (b?.type !== "tool_use") continue;
+          const p = (typeof b.input?.path === "string" && b.input.path)
+            || (typeof b.input?.file_path === "string" && b.input.file_path)
+            || null;
+          if (p && (p === abs || p.endsWith(want) || p.endsWith("/" + rel))) { found = p; break; }
+        }
+      }
+      if (found) abs = found;
+    } catch {}
+  }
   if (kind === "status") {
     const g = gitInfo(cwd);
     let changedFiles = [];
@@ -752,23 +925,103 @@ function workspace(kind, cwd, rel) {
   if (kind === "file") {
     try {
       const st = fs.statSync(abs);
-      if (st.size > 2 * 1024 * 1024) return { state: "too_large", path: abs, language: "", size: st.size };
+      if (st.size > 5 * 1024 * 1024) return { state: "too_large", path: abs, language: "", size: st.size };
+      const ext = path.extname(abs).toLowerCase();
+      const lang = ext.slice(1) || "text";
+      // Image: read binary, base64 → data URL.
+      const IMAGE_MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+        ".ico": "image/x-icon", ".bmp": "image/bmp" };
+      if (IMAGE_MIME[ext]) {
+        const buf = fs.readFileSync(abs);
+        const dataUrl = `data:${IMAGE_MIME[ext]};base64,${buf.toString("base64")}`;
+        return { state: "ok", path: abs, previewType: "image", dataUrl, mimeType: IMAGE_MIME[ext], language: lang, size: st.size };
+      }
+      // Non-text binary: don't try to read as utf8.
+      const BINARY_EXT = new Set([".pdf",".zip",".tar",".gz",".tgz",".bz2",".xz",".7z",".rar",
+        ".exe",".dll",".so",".dylib",".bin",".dat",".db",".sqlite",".sqlite3",
+        ".woff",".woff2",".ttf",".otf",".eot",".mp3",".mp4",".mov",".avi",".mkv",
+        ".wav",".flac",".ogg",".webm",".pptx",".docx",".xlsx",".odt",".ods",".odp",
+        ".class",".jar",".pyc",".pyo",".o",".a",".lib",".pdb",".node"]);
+      if (BINARY_EXT.has(ext)) {
+        return { state: "binary", path: abs, language: lang, size: st.size };
+      }
+      // Default: utf8 text.
       const content = fs.readFileSync(abs, "utf8");
-      return { state: "ok", path: abs, previewType: "text", content, language: (path.extname(abs).slice(1) || "text"), size: st.size };
+      return { state: "ok", path: abs, previewType: "text", content, language: lang, size: st.size };
     } catch { return { state: "missing", path: abs, language: "", size: 0 }; }
   }
   if (kind === "diff") {
+    // Find the git repo root by walking up from the file's directory.
+    // Don't trust session cwd — cli sessions may have cwd=HOME while the file lives elsewhere.
+    let repoRoot = null;
     try {
-      const diff = execSync(`git -C ${JSON.stringify(cwd)} diff -- ${JSON.stringify(abs)}`, { stdio: ["ignore", "pipe", "ignore"] }).toString();
-      return { state: "ok", path: abs, diff };
-    } catch { return { state: "not_git_repo", path: abs }; }
+      const startDir = fs.existsSync(abs) ? (fs.statSync(abs).isDirectory() ? abs : path.dirname(abs)) : path.dirname(abs);
+      repoRoot = execSync(`git -C ${JSON.stringify(startDir)} rev-parse --show-toplevel`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    } catch {}
+    if (repoRoot) {
+      try {
+        const diff = execSync(`git -C ${JSON.stringify(repoRoot)} diff HEAD -- ${JSON.stringify(abs)}`, { stdio: ["ignore", "pipe", "ignore"] }).toString();
+        if (diff.trim()) return { state: "ok", path: abs, diff };
+        // Fall through to jsonl fallback if git diff is empty (file unchanged in git).
+      } catch {}
+    }
+    // Non-git fallback: synthesize a unified-style diff from this session's strReplace tool history.
+    // Lets the user see what the agent changed even when the workspace isn't tracked by git.
+    if (sessionId) {
+      try {
+        const all = messagesFromJsonl(sessionId);
+        const blocks = [];
+        let blockIdx = 0;
+        for (const m of all) {
+          if (m.type !== "assistant" || !Array.isArray(m.content)) continue;
+          for (const b of m.content) {
+            if (b?.type !== "tool_use") continue;
+            const inp = b.input || {};
+            if (inp.command !== "strReplace") continue;
+            const p = inp.path || inp.file_path;
+            if (!p || (p !== abs && !p.endsWith("/" + (rel || "").replace(/^\.?\//, "")))) continue;
+            const oldStr = inp.oldStr || inp.old_str || inp.old_string || "";
+            const newStr = inp.newStr || inp.new_str || inp.new_string || "";
+            if (!oldStr && !newStr) continue;
+            blockIdx++;
+            const oldLines = oldStr.split("\n");
+            const newLines = newStr.split("\n");
+            blocks.push(
+              `@@ edit ${blockIdx} @@\n` +
+              oldLines.map((l) => "-" + l).join("\n") + "\n" +
+              newLines.map((l) => "+" + l).join("\n")
+            );
+          }
+        }
+        if (blocks.length > 0) {
+          const diff = `--- a/${rel || path.basename(abs)} (会话历史 ${blocks.length} 处修改)\n+++ b/${rel || path.basename(abs)}\n` + blocks.join("\n");
+          return { state: "ok", path: abs, diff };
+        }
+      } catch {}
+    }
+    return { state: "not_git_repo", path: abs };
   }
   return { state: "error", path: abs, error: "unknown workspace resource" };
 }
 
 function sessionInfoCwd(id) {
+  if (!id) return null;
+  // 1) Check conversations_v2 (legacy / TUI sessions)
   const rows = sqlite(`SELECT key AS cwd FROM conversations_v2 WHERE conversation_id='${id.replace(/'/g, "")}' LIMIT 1`);
-  return rows[0]?.cwd;
+  if (rows[0]?.cwd) return rows[0].cwd;
+  // 2) Check ~/.kiro/sessions/cli/<id>.json (ACP / kiro-haha sessions)
+  try {
+    const fp = path.join(CLI_SESSIONS_DIR, `${id}.json`);
+    if (fs.existsSync(fp)) {
+      const fd = fs.openSync(fp, "r"); const buf = Buffer.alloc(2048);
+      const n = fs.readSync(fd, buf, 0, 2048, 0); fs.closeSync(fd);
+      const head = buf.toString("utf8", 0, n);
+      const m = head.match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (m) return m[1].replace(/\\"/g, '"');
+    }
+  } catch {}
+  return null;
 }
 
 server.on("error", (e) => {
@@ -783,3 +1036,59 @@ server.on("error", (e) => {
   console.error("[server error]", e?.stack || e);
 });
 server.listen(PORT, "127.0.0.1", () => console.log(`kiro-adapter on http://127.0.0.1:${PORT}`));
+
+// ---------- Preview static file helper ----------
+const PREVIEW_MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".htm":  "text/html; charset=utf-8",
+  ".js":   "application/javascript; charset=utf-8",
+  ".mjs":  "application/javascript; charset=utf-8",
+  ".css":  "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg":  "image/svg+xml",
+  ".png":  "image/png",
+  ".jpg":  "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif":  "image/gif",
+  ".webp": "image/webp",
+  ".ico":  "image/x-icon",
+  ".txt":  "text/plain; charset=utf-8",
+  ".md":   "text/markdown; charset=utf-8",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf":  "font/ttf",
+};
+function previewMimeOf(p) {
+  return PREVIEW_MIME[path.extname(p).toLowerCase()] || "application/octet-stream";
+}
+function servePreviewFile(res, requestedPath, sandboxRoot) {
+  // Sandbox: realpath both, refuse if target escapes sandboxRoot.
+  let target = path.resolve(requestedPath);
+  let rootResolved;
+  try { rootResolved = fs.realpathSync(path.resolve(sandboxRoot)); }
+  catch { res.writeHead(500); return res.end("sandbox root unreadable"); }
+  // Allow target itself to not exist yet—still must lexically be inside root.
+  if (!(target === rootResolved || target.startsWith(rootResolved + path.sep))) {
+    res.writeHead(403); return res.end("path outside sandbox");
+  }
+  // After existence check, resolve symlinks and re-verify.
+  let st;
+  try { st = fs.statSync(target); }
+  catch { res.writeHead(404); return res.end("not found"); }
+  if (st.isDirectory()) target = path.join(target, "index.html");
+  let realTarget;
+  try { realTarget = fs.realpathSync(target); }
+  catch { res.writeHead(404); return res.end("not found"); }
+  if (!(realTarget === rootResolved || realTarget.startsWith(rootResolved + path.sep))) {
+    res.writeHead(403); return res.end("symlink outside sandbox");
+  }
+  let content;
+  try { content = fs.readFileSync(realTarget); }
+  catch { res.writeHead(404); return res.end("not readable"); }
+  res.writeHead(200, {
+    "content-type": previewMimeOf(realTarget),
+    "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+  });
+  res.end(content);
+}

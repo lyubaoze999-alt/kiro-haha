@@ -1,7 +1,13 @@
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 use tauri::Manager;
 
+mod terminal;
+mod webview_panel;
+
+pub const MAIN_WINDOW_LABEL: &str = "main";
+const PORT: u16 = 3789;
 const SERVER_URL: &str = "http://127.0.0.1:3789";
 
 #[tauri::command]
@@ -37,7 +43,12 @@ fn home_dir() -> Option<PathBuf> {
 /// back to PATH lookup. On Windows `where`, on Unix `which`.
 fn node_bin() -> String {
     #[cfg(target_os = "windows")]
-    let candidates: &[&str] = &["node.exe", "node"];
+    let candidates: &[&str] = &[
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Program Files (x86)\\nodejs\\node.exe",
+        "node.exe",
+        "node",
+    ];
     #[cfg(not(target_os = "windows"))]
     let candidates: &[&str] = &[
         "/usr/local/bin/node",
@@ -90,6 +101,16 @@ fn start_adapter(app: &tauri::AppHandle) {
         eprintln!("[kiro-haha] adapter dir not found in resources or ~/kiro-adapter");
         return;
     };
+    // Port availability check before spawning.
+    match TcpListener::bind(("127.0.0.1", PORT)) {
+        Ok(listener) => {
+            drop(listener); // Release the port immediately.
+        }
+        Err(_) => {
+            eprintln!("[kiro-haha] adapter already running on port {PORT}, skip spawn");
+            return;
+        }
+    }
     // Pre-extend PATH for spawned process so child finds node + kiro-cli reliably.
     let extra_path = if cfg!(target_os = "windows") {
         String::new()
@@ -121,6 +142,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(terminal::init())
+        .manage(webview_panel::PreviewState::default())
         .setup(|app| {
             start_adapter(&app.handle());
             Ok(())
@@ -130,7 +154,20 @@ pub fn run() {
             get_app_mode,
             detect_portable_dir,
             set_app_zoom,
-            macos_notification_permission_state
+            macos_notification_permission_state,
+            terminal::terminal_spawn,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_kill,
+            terminal::get_terminal_bash_path,
+            terminal::set_terminal_bash_path,
+            webview_panel::preview_open,
+            webview_panel::preview_navigate,
+            webview_panel::preview_set_bounds,
+            webview_panel::preview_set_visible,
+            webview_panel::preview_close,
+            webview_panel::preview_eval,
+            webview_panel::preview_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

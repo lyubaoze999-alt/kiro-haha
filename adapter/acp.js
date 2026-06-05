@@ -57,6 +57,10 @@ export function startAcpBridge({ ws, sessionId, cwd, model, agent, resumeId, per
   let replaying = false; // true while session/load replays history as session/update
   let curModel = model;  // active model id, updatable mid-session via set_runtime_config
   let permMode = permissionMode || "default"; // default|acceptEdits|plan|bypassPermissions|dontAsk
+  // Session-level allowlist of tool names: when user clicks "Allow for session" on a permission
+  // dialog, we add the tool name here. Subsequent session/request_permission for the same tool
+  // is auto-allowed without re-asking. Resets on WS reconnect (acceptable).
+  const sessionAllowToolNames = new Set();
   const pendingPerms = {}; // requestId -> { acpId, allowOpt, rejectOpt }
 
   const send = (obj) => child.stdin.write(JSON.stringify(obj) + "\n");
@@ -89,8 +93,14 @@ export function startAcpBridge({ ws, sessionId, cwd, model, agent, resumeId, per
       const allow = opts.find((o) => (o.kind || "").includes("allow")) || opts[0];
       const reject = opts.find((o) => (o.kind || "").includes("reject"));
       const tc = v.params?.toolCall || {};
+      const toolName = tc.title || tc.kind || "tool";
+      // Session-level allowlist (set by user clicking "Allow for session"): bypass ask.
+      if (sessionAllowToolNames.has(toolName)) {
+        send({ jsonrpc: "2.0", id: v.id, result: { outcome: { outcome: "selected", optionId: allow?.optionId || "allow" } } });
+        return;
+      }
       const decision = decidePermission(permMode, tc);
-      console.log(`[acp ${sessionId.slice(0,8)}] perm: "${tc.title || tc.kind}" mode=${permMode} → ${decision}`);
+      console.log(`[acp ${sessionId.slice(0,8)}] perm: "${toolName}" mode=${permMode} → ${decision}`);
       if (decision === "allow") {
         send({ jsonrpc: "2.0", id: v.id, result: { outcome: { outcome: "selected", optionId: allow?.optionId || "allow" } } });
         return;
@@ -101,8 +111,8 @@ export function startAcpBridge({ ws, sessionId, cwd, model, agent, resumeId, per
       }
       // ask the user: forward to frontend, resolve on permission_response
       const reqId = String(v.id);
-      pendingPerms[reqId] = { acpId: v.id, allowOpt: allow?.optionId, rejectOpt: reject?.optionId };
-      wsSend({ type: "permission_request", requestId: reqId, toolName: tc.title || tc.kind || "tool", toolUseId: tc.toolCallId, input: tc.rawInput || {}, description: tc.title });
+      pendingPerms[reqId] = { acpId: v.id, allowOpt: allow?.optionId, rejectOpt: reject?.optionId, toolName };
+      wsSend({ type: "permission_request", requestId: reqId, toolName, toolUseId: tc.toolCallId, input: tc.rawInput || {}, description: tc.title });
       return;
     }
     if (method === "fs/read_text_file") {
@@ -231,10 +241,25 @@ export function startAcpBridge({ ws, sessionId, cwd, model, agent, resumeId, per
   ws.on("message", (raw) => {
     let m; try { m = JSON.parse(raw.toString()); } catch { return; }
     if (m.type === "ping") { wsSend({ type: "pong" }); return; }
-    if (m.type === "set_permission_mode") { permMode = m.mode || "default"; return; }
+    if (m.type === "set_permission_mode") {
+      permMode = m.mode || "default";
+      // Persist user's choice so it survives ws reconnects / app restarts.
+      try {
+        const SETTINGS_FILE = path.join(os.homedir(), ".kiro-haha-settings.json");
+        let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8")); } catch {}
+        cfg.permissionMode = permMode;
+        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(cfg, null, 2));
+      } catch (e) { console.warn(`[acp ${sessionId.slice(0,8)}] persist permissionMode failed: ${e}`); }
+      return;
+    }
     if (m.type === "permission_response") {
       const p = pendingPerms[m.requestId];
       if (p) {
+        // "Allow for session" → remember this toolName for the rest of this WS connection.
+        if (m.allowed && m.rule === "always" && p.toolName) {
+          sessionAllowToolNames.add(p.toolName);
+          console.log(`[acp ${sessionId.slice(0,8)}] session-allow added: "${p.toolName}" (allowlist size=${sessionAllowToolNames.size})`);
+        }
         const optId = m.allowed ? p.allowOpt : p.rejectOpt;
         send({ jsonrpc: "2.0", id: p.acpId, result: (optId ? { outcome: { outcome: "selected", optionId: optId } } : { outcome: { outcome: "cancelled" } }) });
         delete pendingPerms[m.requestId];
