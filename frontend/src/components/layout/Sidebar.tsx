@@ -10,6 +10,7 @@ import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID } from '../../stores/tab
 import { useChatStore } from '../../stores/chatStore'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
 import { desktopUiPreferencesApi, type SidebarProjectPreferences } from '../../api/desktopUiPreferences'
+import { SidebarQuotaCard } from './SidebarQuotaCard'
 
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
 const isWindows = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
@@ -678,6 +679,12 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
           </div>
         </div>
       </div>
+
+      {/* Account-level credits indicator (above NavItems, below brand strip).
+          - mobile: tap-to-open BottomSheet
+          - desktop expanded: card with hover popover
+          - desktop collapsed: 44×44 icon with status dot + right-side tooltip */}
+      <SidebarQuotaCard mode={isMobile ? 'mobile' : (expanded ? 'expanded' : 'collapsed')} />
 
       <div className={`px-3 pb-3 flex flex-col ${expanded ? 'gap-0.5' : 'items-center gap-2'}`}>
         <NavItem

@@ -24,6 +24,7 @@ import { RepositoryLaunchControls } from '../shared/RepositoryLaunchControls'
 import { FileSearchMenu, type FileSearchMenuHandle } from './FileSearchMenu'
 import { LocalSlashCommandPanel, type LocalSlashCommandName } from './LocalSlashCommandPanel'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
+import { QuotaIndicator } from './QuotaIndicator'
 import {
   getLocalizedFallbackCommands,
   filterSlashCommands,
@@ -1135,6 +1136,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             </div>
 
             <div className="flex min-w-0 items-center gap-2">
+              <QuotaIndicator compact={useCompactControls} />
               {!isMemberSession && activeTabId && (
                 <ContextUsageIndicator
                   sessionId={activeTabId}

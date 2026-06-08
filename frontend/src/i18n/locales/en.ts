@@ -1695,6 +1695,26 @@ export const en = {
   'tabs.hideWorkspace': 'Hide Workspace',
   'tabs.showBrowser': 'Show Browser',
   'tabs.hideBrowser': 'Hide Browser',
+
+  // ─── Quota / Credits (sidebar card + popover) ────
+  'quota.detailTitle': 'Credits balance',
+  'quota.used': 'Used',
+  'quota.remaining': 'Remaining',
+  'quota.resetTime': 'Reset on',
+  'quota.resetOn': 'Resets {date}',
+  'quota.warningHint': 'Watch your balance',
+  'quota.dangerHint': 'Almost out',
+  'quota.errorTitle': 'Open Kiro IDE to refresh',
+  'quota.errorBody': 'kiro-haha reads your credits from the same auth token Kiro IDE uses. Open Kiro IDE once so it refreshes the token, then come back here.',
+  'quota.errorMeta': 'Cannot read plan',
+  'quota.emptyAmount': 'Open Kiro IDE to refresh',
+  'quota.refresh': 'Refresh',
+  'quota.retry': 'Retry',
+  'quota.clickToRefresh': 'Click to refresh',
+  'quota.overage': 'Overage billing',
+  'quota.overageOn': 'Enabled',
+  'quota.overageOff': 'Off',
+  'quota.lastUpdated': 'Updated {secs}s ago',
 } as const
 
 export type TranslationKey = keyof typeof en
