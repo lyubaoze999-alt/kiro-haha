@@ -1,5 +1,234 @@
 # kiro-haha 项目进度
 
+## 📌 最新进度 (2026-06-08, **Sidebar Credits Card v3**)
+
+### Credits 入口升级（按 v3 设计稿落地）
+- **设计稿**: `~/Downloads/codex项目/kiro-haha-credits-design-v3-compact.html`
+- **改动定位**: 把账户级 credits 从 composer chip 升级到 **Sidebar 顶部卡片**（品牌区下方、NavItem 上方）。原 composer chip 保留并存（同一个 hook，零数据重复）。
+- **三主题色板复用**: 用 `--color-brand` (light: 暖橘 #8F482F) + `--color-warning` + `--color-error`，**不引入设计稿原稿的 purple**，三主题（light/white/dark）自动适配。
+
+### 新增/改动文件 (7 个，+663 行)
+- 新增 `frontend/src/components/chat/useQuotaSummary.ts` (114 行)：抽 fetch + 缓存 + 强刷 + 派生态（pct / tone / toneColorVar）的 hook
+- 新增 `frontend/src/components/layout/SidebarQuotaCard.tsx` (406 行)：三模式 `expanded` / `collapsed` / `mobile`
+- 改 `frontend/src/components/chat/QuotaIndicator.tsx` (94 行)：composer chip 改用 useQuotaSummary（保留兼容）
+- 改 `frontend/src/components/chat/ChatInput.tsx`：保留挂在 composer 工具栏的 chip
+- 改 `frontend/src/components/layout/Sidebar.tsx`：在品牌区下方插入 `<SidebarQuotaCard mode={isMobile ? 'mobile' : (expanded ? 'expanded' : 'collapsed')} />`
+- 改 `frontend/src/i18n/locales/{en,zh}.ts`：加 18 个 `quota.*` 词条（建议关注余量 / 即将用完 / 打开 Kiro IDE 后刷新 / 重置 / 重试 / 已用 / 剩余 / 超额计费 等）
+
+### 四态视觉规则（按 `/api/quota` 字段派生）
+| 状态 | 触发 | 主色 | 卡片 footer |
+|---|---|---|---|
+| 正常 | pct < 60% | `--color-brand` | `Jun 30 重置` + `46%` |
+| 提醒 | 60–85% | `--color-warning` + 黄色卡片背景 | `建议关注余量` + `78%` |
+| 紧张 | > 85% 或 overage>0 | `--color-error` + 浅红卡片背景 | `即将用完` + `94%` |
+| 不可用 | `available=false` | 灰色 | `打开 Kiro IDE 后刷新` + `重试` |
+
+**关键：不可用态不再 return null**（旧 QuotaIndicator 是 token 过期时整个隐藏），改为常显灰色卡片 + 重试 CTA，避免用户不知道为什么没数。
+
+### 收起态 (rail) + 移动端
+- collapsed: 44×44 圆角按钮 + zap 图标 + 右下 8px 状态点（颜色跟随 tone）+ hover 向右展开 220px tooltip
+- mobile: 同样的 expanded 卡片样式，**点击打开 `MobileBottomSheet`**（已有组件复用，零新依赖）
+
+### 实测验证
+- playwright 截图 4 态 + collapsed rail：`/tmp/quota-{normal,warning,danger,unavailable,collapsed-rail,collapsed-tooltip}-*.png`
+- 控制台 0 报错（`pageerror` / `console.error` 计数 = 0）
+- TS strict 编译通过、bun build 通过、tauri build 通过、`/Applications/kiro-haha.app` 已重新部署、adapter 健康
+
+### 部署 + git
+- `/Applications/kiro-haha.app` 已替换为新版（含 SidebarQuotaCard）
+- adapter 仍跑在 PID（孤儿进程模式，按上轮约定），数据正常返回
+- git: `lyubaoze999-alt/kiro-haha` main = `f3f0f67`，已 push
+  - 注意：当前 `/api/quota` 返回 `{available:false}`，是上一轮已知的 token 过期场景；用户打开 Kiro IDE 一次后会自动刷回正常数据，UI 会从灰色卡片切到正常态
+
+---
+
+## 📌 上一阶段进度 (2026-06-05 ~ 2026-06-08, **v0.2.0**)
+
+### 当前部署状态
+- `/Applications/kiro-haha.app` v0.2.0 已部署 (aarch64 dmg 35MB, app.tar.gz 14.6MB + .sig)
+- adapter PID 跑在 3789（含今天全部修复，bundle 内 server.js 61448 字节、acp.js 16016 字节）
+- git: `lyubaoze999-alt/kiro-haha` main = `5d5b31c` (commit `1e16932` 含 v0.2.0 全部代码 + tag v0.2.0 已推)
+- README 改成 clone-and-build 优先（暂无 GitHub Release，OAuth code `48CB-0566` 未用、待发布走方案 A 给 PAT 或方案 C 手动 attach 4 个文件）
+- Tauri signer keypair 在 `~/.tauri/kiro-haha.key` (密码 `kiro-haha-2026`)，pubkey 已进 tauri.conf.json
+- GitHub workflow 加了 `TAURI_SIGNING_PRIVATE_KEY/_PASSWORD` env + macOS latest.json 生成 step；但**用户未在 GitHub 加 secrets**，所以 workflow 跑会失败。需要用户手动加 2 个 secrets 才能发版自动签名
+- private key value 见 `cat ~/.tauri/kiro-haha.key`
+
+### 浏览器子 webview (cc-haha 原版搬运)
+- 抄 `webview_panel.rs` (~/kiro-gui/src-tauri/src/webview_panel.rs, 167 行) + `preview-agent.js` (~/kiro-gui/src-tauri/resources/, 216KB)
+- lib.rs 加 `mod webview_panel + MAIN_WINDOW_LABEL=main + manage(PreviewState) + 注册 7 命令` (preview_open/navigate/setBounds/setVisible/close/eval/message)
+- Cargo.toml: `tauri = features=["unstable"]` (add_child / get_window 是 unstable API)
+- adapter `/preview-fs/:sid/<rest>` + `/local-file/<abs>` 路由提供 webview 静态文件 source，含 path-traversal sandbox + symlink check + 16 种 mime
+- 前端契约 (`previewBridge.ts`) 已在 cc-haha 原版，本次只补后端
+
+### 内置终端
+- 新建 `terminal.rs` (270 行)：portable-pty 跨平台 PTY、AtomicU32 自增 session_id、reader/wait thread emit `terminal-output/exit` 事件（snake_case session_id 跟前端契约对齐）
+- bash path override 用 `BASH_PATH_OVERRIDE: Mutex<Option<String>>` 内存值
+- 7 命令：terminal_spawn/write/resize/kill + get_terminal_bash_path + set_terminal_bash_path
+- pick_default_shell: cfg(windows) 选 cmd.exe，cfg(unix) 选 $SHELL/zsh/bash
+
+### lib.rs 端口检测 + Win 兼容
+- 加 `const PORT: u16 = 3789` + spawn 前 `TcpListener::bind` 试探，bind 失败说明已有 adapter，return 不重复 spawn（防双 spawn 抢端口失败回退到旧 adapter）
+- `node_bin()` Win 分支加 `C:\Program Files\nodejs\node.exe` + `(x86)\nodejs\node.exe` 兜底
+
+### Tauri 自动更新链路
+- 加 tauri-plugin-updater = "2"
+- lib.rs `.plugin(tauri_plugin_updater::Builder::new().build())`
+- capabilities/default.json 加 `"updater:default"`
+- tauri.conf.json: `bundle.createUpdaterArtifacts: true` + `plugins.updater.{pubkey, endpoints}`
+- endpoint: `https://github.com/lyubaoze999-alt/kiro-haha/releases/latest/download/latest.json` (你不发 release 时 404，前端 catch 显示"无可用更新"不报红错)
+- workflow build-macos.yml 加 latest.json 生成 step (darwin-aarch64) + attach 到 release
+- workflow build-windows.yml 加 signer env + .nsis.zip + .sig attach（未做 latest.json 合并，Windows 自动更新待后续）
+- 现状：用户点检查更新 → 404 graceful；推 main / 改分支不影响（Release 才触发）
+
+### Adapter 9+ 项修复
+1. **MCP toggle 真翻转**：原 `disabled = !enabled` 当 enabled=undefined 时永远关。改 flip 当前 disabled，支持项目级 cwd mcp.json
+2. **图片预览**：原 `fs.readFileSync(abs, 'utf8')` 读 binary 全乱码。按扩展名分三类：image (.png/.jpg/.jpeg/.gif/.webp/.svg/.ico/.bmp) → base64 dataUrl + previewType:'image' + mimeType；非图片二进制 (.pdf/.zip/.pptx 等) → state:'binary'；其他走 utf8。size 上限 2MB→5MB
+3. **/preview-fs + /local-file 路由**：webview 加载本地 HTML/asset 用，sandbox 严格限 cwd 或 HOME
+4. **sessionInfoCwd 兼容 cli session**：先查 conversations_v2，没有再扫 ~/.kiro/sessions/cli/<id>.json
+5. **workspace diff 找 git root + jsonl 伪 diff**：原走 `git -C cwd diff` cwd 错失败。改用 `path.dirname(abs) → git rev-parse --show-toplevel` 找 git 根；非 git 仓库 fallback 扫 jsonl 抽 strReplace 工具的 oldStr/newStr 拼 unified diff（cc-haha 在非 git 项目里也能看到本会话改了什么）
+6. **workspace file path 不存在时回退**：相对路径 abs 不存在时扫 jsonl 找匹配 endsWith 的最近 ToolUse 绝对路径。处理 cli session cwd=HOME 但实际工作目录在别处的情况
+7. **turn-checkpoints 抽 ToolUse path**：原永远返 filesChanged:[]。改成切组到每个 user turn，扫所有 tool_use 抽 input.path / input.file_path 收集去重，前端"本轮变更卡片"直接展示。**对接 cc-haha CurrentTurnChangeCard 的 progressive disclosure 模型，对应 OpenAI Codex App 的 task sidebar artifact 体系**
+8. **权限 "Allow for session" 真生效**：acp.js 加 `sessionAllowToolNames: Set`，permission_response 收到 rule:'always' && allowed 时把 toolName 加进白名单；后续 session/request_permission 命中白名单直接 allow（per-WS 持久）
+9. **permissionMode 持久化 + 跨 session 同步**：acp.js set_permission_mode 写回 ~/.kiro-haha-settings.json；server.js 在 ws connect、listSessions、inspection 三处 re-read settings；listSessions 返回每 session 都带 permissionMode = USER_SETTINGS.permissionMode；前端切换 selector 不再重置默认
+10. **stale lock 启动自动清扫**：adapter 启动时扫 ~/.kiro/sessions/cli/*.lock，process.kill(pid, 0) ESRCH 检测进程已死则删 lock。修我之前 SIGKILL adapter 留下的孤儿 lock 导致"对话不展示结果/0-credits 假象"
+11. **skill resources 用 kiro 官方 progressive disclosure**：撤回最初塞全量 skill 索引到 agent.prompt（每 turn 多 1800 token）。改成按 kiro IDE 官方机制，agent.resources 字段加 `["skill://.kiro/skills/*/SKILL.md", "skill://~/.kiro/skills/*/SKILL.md"]` 用 skill:// URI scheme，由 kiro-cli 自己 progressive disclosure（启动只加载 frontmatter name+description，活动时才加载完整 SKILL.md）。零 token 增量
+12. **WS 默认走 kiro-haha agent**：原仅在 hooksConfigured() 时切换。改成新会话始终用 kiro-haha agent，让 skill resources 生效。adapter 启动时 syncSkillIndexToHookAgent() 维护 agent.json
+13. **kiroBin() Windows where 兼容**：原 `which kiro-cli` Win 不行。改成 `process.platform === 'win32' ? 'where' : 'which'`，加 Win fallback 路径 `%USERPROFILE%/AppData/Local/Programs/kiro-cli/kiro-cli.exe`
+
+### Quota / 总额度显示 (kiro Power 4628/10000 同款)
+- **API endpoint**: `https://management.us-east-1.kiro.dev/` POST `AmazonCodeWhispererService.GetUsageLimits`
+- **鉴权**: 读 `~/.aws/sso/cache/kiro-auth-token.json` accessToken（kiro IDE/desktop 维护刷新）
+- **profileArn**: 读 sqlite `state` 表 `api.codewhisperer.profile.arn`
+- adapter `/api/quota` 返回 `{available, plan, used, limit, overage, overageEnabled, nextResetAt, raw}`
+- inspection 端点 usage.quota 也带，costDisplay 改成 `4500 / 10000 KIRO POWER credits`
+- **触发策略 (mirror kiro IDE)**: 只在 ws 新连接 fetch 一次 + 前端组件 mount 时读缓存 + 用户**点击 chip refresh=1 强刷**。**没有定时轮询**（kiro IDE 也不轮询）
+- 前端 QuotaIndicator.tsx (134 行) 加在 ChatInput 工具栏，显示 ⚡ used/limit + hover tooltip（plan / 进度条 / 重置日期 / 超额状态）
+- **token 过期处理**：adapter 检测 expiresAt < now 时返 `error: "no valid kiro auth token (re-login may be needed)"`。用户需要打开 kiro IDE 触发 token 自动 refresh。**TODO: adapter 自动用 OIDC refresh_token grant 主动刷新（用 sqlite auth_kv 里的 device-registration client_id/secret）**
+
+### 前端组件改动 (本轮 build 进 dist)
+- `frontend/src/components/chat/QuotaIndicator.tsx` 新建 134 行
+- `frontend/src/components/chat/ChatInput.tsx` import + 渲染 QuotaIndicator (compact prop 跟 PermissionModeSelector 同步)
+- `frontend/src/api/websocket.ts` 复用 OPEN 连接给新 handler queueMicrotask 补发 connected 帧
+- 其他 cc-haha 原版前端代码（535 文件）已 git tracked，clone build 即可复现
+
+### 路径速查
+- adapter src: `~/kiro-adapter/{server.js,acp.js}`
+- adapter bundle: `~/kiro-gui/src-tauri/adapter/{server.js,acp.js}` (打包前必须 cp 同步！)
+- frontend src: `~/kiro-haha-repo/frontend/`（git，已完整）+ `/tmp/cc-haha/desktop/`（macOS 会清 /tmp，可能不全；用 git 仓库版本）
+- tauri shell: `~/kiro-gui/src-tauri/`
+- git repo: `~/kiro-haha-repo/`（main 已推 v0.2.0）
+- icon: `~/Downloads/codex项目/kiro_app_icon/Kiro_1024.png`
+- 备份: `/tmp/kiro-haha-pkg-{1,23,browser}-backup/` （可能被清）
+
+### 打包流程速查（5 步）
+```bash
+# 0. 同步 adapter 到 bundle (容易忘！)
+cp ~/kiro-adapter/{server.js,acp.js} ~/kiro-gui/src-tauri/adapter/
+
+# 1. 前端 build
+export PATH="$HOME/.bun/bin:$PATH"
+cd ~/kiro-haha-repo/frontend && VITE_DESKTOP_SERVER_URL=http://127.0.0.1:3789 bun run build
+rm -rf ~/kiro-gui/cchaha-dist && cp -R ~/kiro-haha-repo/frontend/dist ~/kiro-gui/cchaha-dist
+
+# 2. tauri build (含签名)
+source "$HOME/.cargo/env"
+export TAURI_SIGNING_PRIVATE_KEY=$(cat ~/.tauri/kiro-haha.key)
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="kiro-haha-2026"
+cd ~/kiro-gui && npm run tauri build
+
+# 3. 部署
+pkill -f kiro-haha; sleep 1
+rm -rf "/Applications/kiro-haha.app"
+cp -R ~/kiro-gui/src-tauri/target/release/bundle/macos/kiro-haha.app /Applications/
+xattr -cr "/Applications/kiro-haha.app"
+lsof -ti:3789 | xargs kill -9; sleep 1
+open "/Applications/kiro-haha.app"
+
+# 4. 验证
+sleep 4 && curl -s http://127.0.0.1:3789/health
+curl -s http://127.0.0.1:3789/api/quota
+```
+
+### 待办（下一对话接续）
+- [ ] 用户在 GitHub 上加 2 个 Secrets (`TAURI_SIGNING_PRIVATE_KEY` = `cat ~/.tauri/kiro-haha.key`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` = `kiro-haha-2026`) → 让 workflow 能跑
+- [ ] 用户决定要不要发布 v0.2.0 Release（OAuth code `48CB-0566` 应该已过期，需要重新 device flow 或方案 C 拖文件）
+- [ ] **token 自动 refresh**（OIDC refresh_token grant），免去用户偶尔需要打开 kiro IDE 刷新
+- [ ] HTML 文件预览顶部加「▶ 浏览器渲染」按钮（cc-haha 默认走代码视角，渲染版要按钮触发）
+- [ ] CurrentTurnChangeCard 默认 'diff' 改成 git/non-git 智能选（adapter 加 inGitRepo 字段，前端 1 行）
+- [ ] ToolCallBlock chip 等 tool_result 才可点（cc-haha 原版 chip 出现就可点，但工具未完成时点了看不到正确内容）
+- [ ] 历史 commits / clean up：今天的改动是 squash 一个 commit `1e16932`，下次想拆细可分 6-8 个
+
+## 📌 上一阶段进度 (2026-06-04 ~ 2026-06-05)
+
+### 自包含打包 + 跨平台
+- **适配器打包进 Tauri 资源**：`~/kiro-gui/src-tauri/adapter/`（含 server.js + acp.js + node_modules 17MB），声明在 `tauri.conf.json` `bundle.resources`，构建后位于 `Contents/Resources/adapter/`。
+- **`lib.rs` 跨平台重写**：`resolve_adapter_dir()` 优先用 bundled 资源，回退 `~/kiro-adapter`。`node_bin()` 平台分流：Mac 检 `/usr/local/bin/node` `/opt/homebrew/bin/node` `/usr/bin/node` + `which`；Windows `where node`。`start_adapter` 在 setup hook 里调（拿到 `app.handle()`）。
+- **本地实测**：临时挪走 `~/kiro-adapter` 后启动 app，bundled adapter 正常 spawn、health ok。dmg 体积 14MB。
+- **GitHub Actions 双 workflow**：`.github/workflows/build-{macos,windows}.yml` push main 自动产 dmg/msi/exe，打 tag `v*` 自动 attach 到 Release。
+- **README.md** 完整：装 Kiro CLI + Node + 下载 .dmg/.msi 三步；含项目结构 + 源码构建命令。
+
+### 用户操作要求
+- 终端用户唯一前置依赖：**Node.js (≥18) + Kiro CLI**（AWS 官方，登录 Builder ID 拿 credits）
+- ACP 配置无需用户填，适配器自动 spawn `kiro-cli acp`
+
+### Codex 风格消息队列（chatStore + ChatInput + MessageQueue）
+- 新增 `messageQueue: QueuedMessage[]` per-session 状态 + actions: `enqueueMessage` / `removeQueuedMessage` / `clearMessageQueue` / `flushQueuedMessage`
+- ChatInput busy 时（chatState !== 'idle'）Enter 不再 toast 拒绝，**直接入队**并清空输入框
+- 队列 UI 在 composer 上方，每条 pill 含截断文字 + ×：点 × 单删，点文字回填到输入框编辑（同时移出队列），右上有"清空"
+- 自动 flush：`message_complete` 完成后 50ms + `stopGeneration` 完成后 50ms 触发 `flushQueuedMessage`，按 FIFO 自动发下一条
+- 视觉用 `--color-*` 设计令牌，三主题（light/white/dark）自动适配
+
+### Kiro IDE 风格 Rewind（铅笔按钮真删）
+- **适配器**：`/api/sessions/:id/turn-checkpoints` 返回每条 user 消息的 checkpoint（targetUserMessageId/userMessageIndex/userMessageCount）；`/api/sessions/:id/rewind` 找到第 N 个 Prompt 的字节偏移，物理截断 .jsonl，清 JSONL_CACHE，强制 close 该 sessionId 的所有 WS（`ws.sessionId` stash + `wss.clients` 遍历 terminate）让前端重连开干净 ACP 子进程
+- **前端**：UserMessage hover 时铅笔（之前是软-restore 复制内容）已升级，先尝试 `handleRewindToTarget(target)` 真 rewind→reloadHistory→queueComposerPrefill，无 target 才回退到软 restore
+- 失败：必须是已完成 turn（即至少有一条 assistant 回复），否则 completedTurnTargets 不包含这条，铅笔降级为软 restore
+
+### 体验稳定性修复（一系列硬骨头）
+- **JSONL 增量缓存**：之前我加的"只读最后 8MB"截断在 message_complete 后 loadHistory 时把内存 live 消息覆盖成截断版本（"对话过程中消失"症状）。改为 mtime+size 失效的全量缓存，首次 144MB session 0.72s 解析、warm cache 35ms，**不截断**所以重连合并不丢消息
+- **disabled `refreshCompletedTranscriptHistory`** in chatStore message_complete 后：那个调用触发 loadHistory→merge 与 stream 完成的新消息打架。注释掉后 stream 消息保留稳定。代价：app 持续打开时不再自动同步外部（CLI TUI）写入，可接受
+- **图片附件传输**：acp.js `user_message` 之前只传 m.content 文本，**附件全部丢弃**。现在转成 ACP image content blocks（处理 data URL + 裸 base64），文件类附件转 `@path` 引用塞进文本。实测真截图能识别（Bedrock 错误"Could not process image"是测试用的 hex PNG 格式不合法，真 PNG 一切正常）
+- **PermissionModeSelector 空白按钮**：用户设置文件 permissionMode="auto" 不在 PermissionMode 枚举（default/acceptEdits/plan/bypassPermissions/dontAsk），MODE_ICONS/LABELS["auto"] 是 undefined → 渲染空白。前端加白名单防御回退到 'default'，server.js 默认改 'default'，已保存的 settings.json 直接改写
+- **Session lock orphan cleanup 撤回**：之前加的"启动时杀 kiro-cli 孤儿 ACP"过于粗暴，把用户 CLI TUI 的 ACP 子进程也杀了。**已完全移除**这段代码。Session 被锁的处理改为：session/load 报 `Session is active in another process` 时 acp.js 把 error 转成前端 error 帧 + close ws，让用户能看到原因（之前是静默 0-credits 假象）
+- **Streaming indicator 漏显**：MessageList 之前只在 chatState='tool_executing' 或 'thinking && !activeThinkingId' 显示 indicator。在 'streaming' 期间长 chunk 间隔时用户看不到任何活动 → 误判卡死。已加 streaming 状态触发，含已耗时秒数 + token 数动态展示
+
+### 模型 + 运行时持久化（修"切回会话模型变 auto"）
+- acp.js 新增 `~/.kiro-haha-runtime.json` 按真实 ACP UUID 持久化 `{modelId, providerId}`
+- WS handshake 完成后从磁盘读回 → 作为本会话 `curModel`，并 wsSend `connected` 帧带 `runtimeSelection`
+- `set_runtime_config` WS 消息持久化到磁盘
+- `session/prompt` **永远显式带 model**（即使 'auto'），消除 Kiro CLI ACP "0-credits 空响应" 偶发 bug
+- 前端 chatStore connected handler：收到 `runtimeSelection` 时若本地 store 不一致就同步过来，让 model chip 显示正确
+
+### 文件类工具调用 → 右侧面板预览
+- ToolCallBlock：检测 input.path 或 input.file_path 即视为 fileTool（兼容 Kiro `fs_write` 真实工具名），对话里只显示**蓝色虚线下划线 + 完整路径**的可点击 chip + ↗ 图标，**不再内联展开代码**
+- 点击 → `useWorkspacePanelStore.openPreview(sessionId, path, kind)` 在右侧面板按格式渲染（代码语法高亮 / Markdown / 图片 / diff）
+- Edit 类（detect `command:'strReplace'` 或 `old_string`）打开 diff，否则普通文件预览
+- ChatSessionContext 提供 sessionId fallback，避免逐层 prop drilling
+
+### 图标二次替换（用户提供新 PNG）
+- 用 `/Users/lvbaoze/Downloads/codex项目/kiro_app_icon/Kiro_1024.png`（紫底白幽灵清晰版）替换原水彩稿
+- Python PIL 一次生成：`public/app-icon.png` (1024) + Tauri icons 全套 PNG + macOS .icns + **Windows .ico (16/32/48/64/128/256 多尺寸)**
+- 部署后 killall Dock + Finder 强刷图标缓存
+
+### Skill: claude-code-delegate
+- 写在 `~/.agent-shared/skills/claude-code-delegate/SKILL.md`
+- 触发词："用 claude 干"/"委派给 cc"/"用 claude code 跑"
+- 行为：调 `claude --print --output-format text "<原任务>"`（Anthropic 预算池，不消耗 Kiro credits），结果原样返回。可选 `--dangerously-skip-permissions` 当用户明确同意/在 bypass 模式
+- 适配器 `/api/skills` 已识别（实测返回 ✓ claude-code-delegate）；用户在 Kiro Haha 任意会话直接说自然语言即可
+
+### GitHub 同步
+- repo: https://github.com/lyubaoze999-alt/kiro-haha
+- 最新 commit `51161cc`：feat: 自包含打包 + 跨平台构建（适配器进 bundle / lib.rs 跨平台 / Mac+Win workflow / README）
+- 推送方式：SSH key (`ssh-ed25519 ...lvbaoze901@hellobike.com`) 已加到 lyubaoze999-alt 账号
+
+### 当前部署状态
+- adapter PID 持续运行，所有最新改动都跑在内存里
+- /Applications/kiro-haha.app 是用新 Kiro 幽灵图标 + bundled adapter + 全部前端改动的版本
+- ~/kiro-haha-repo 已和本地最新代码同步并推送
+
+---
+
+## 历史进度（含早期记录）
+
 ## 目标
 做一个 UI 和功能都尽量和 cc-haha（NanmiCoder/cc-haha，基于 Claude Code 的桌面工作台）一致的应用，但后端用 **Kiro CLI** 驱动。最终方案 = **复用 cc-haha 开源前端 + 自写适配层接 Kiro CLI ACP 协议**。
 

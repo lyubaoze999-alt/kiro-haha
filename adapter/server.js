@@ -276,6 +276,11 @@ const server = http.createServer(async (req, res) => {
   const seg = url.pathname.split("/").filter(Boolean); console.log("REQ",req.method,url.pathname);
   if (req.method === "OPTIONS") { res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "*", "Access-Control-Allow-Headers": "*" }); return res.end(); }
   if (url.pathname === "/health") return json(res, { status: "ok", ready: true });
+  if (url.pathname === "/api/quota") {
+    // Force-refresh on ?refresh=1, otherwise return cached.
+    if (url.searchParams.get("refresh") === "1") { fetchKiroQuotaOnce(); }
+    return json(res, summarizeKiroQuota());
+  }
 
   // Static file routes for in-app browser webview (cc-haha contract).
   // /preview-fs/:sessionId/<rest>: serve files inside the session's cwd (sandboxed).
@@ -325,9 +330,18 @@ const server = http.createServer(async (req, res) => {
         try { Object.assign(USER_SETTINGS, JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"))); } catch {}
         const ctx = contextSnapshot(seg[2]);
         const meta = SESSION_META.get(seg[2]) || {};
+        const q = summarizeKiroQuota();
         return json(res, {
           config: { permissionMode: USER_SETTINGS.permissionMode || "default", model: "auto", cwd: sessionInfoCwd(seg[2]) || HOME, tools: [], mcpServers: [], slashCommandCount: SLASH.length, skillCount: 0 },
-          usage: { input_tokens: 0, output_tokens: 0, totalCostUSD: 0, costDisplay: `${(meta.totalCredits || 0).toFixed(2)} credits`, totalCredits: meta.totalCredits || 0, models: [] },
+          usage: {
+            input_tokens: 0, output_tokens: 0, totalCostUSD: 0,
+            costDisplay: q.available
+              ? `${(q.used || 0).toFixed(0)} / ${(q.limit || 0).toFixed(0)} ${q.plan} credits`
+              : `${(meta.totalCredits || 0).toFixed(2)} credits`,
+            totalCredits: meta.totalCredits || 0,
+            models: [],
+            quota: q,
+          },
           context: ctx,
           contextEstimate: ctx,
           errors: {},
@@ -610,6 +624,127 @@ const USER_SETTINGS = {
 const SETTINGS_FILE = path.join(HOME, ".kiro-haha-settings.json");
 try { Object.assign(USER_SETTINGS, JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"))); } catch {}
 
+// ---------- Kiro quota / usage limits poller ----------
+// kiro-cli ACP doesn't expose subscription quota; we hit the same control-plane
+// endpoint that kiro IDE / desktop uses (`AmazonCodeWhispererService.GetUsageLimits`),
+// reading the access token written by kiro's own auth flow. Doesn't consume LLM
+// credits — this is account metadata, not inference.
+const KIRO_QUOTA = {
+  data: null,           // last successful response (full body)
+  fetchedAt: 0,         // ms epoch
+  error: null,          // last error message (if any)
+  inFlight: false,
+};
+const KIRO_QUOTA_ENDPOINTS = {
+  // Region prefix → endpoint. Default to us-east-1; switch by `region` field in token cache.
+  default: "https://management.us-east-1.kiro.dev/",
+  "eu-central-1": "https://management.eu-central-1.kiro.dev/",
+};
+const KIRO_AUTH_TOKEN_FILES = [
+  path.join(HOME, ".aws/sso/cache/kiro-auth-token.json"),       // desktop token (preferred, kiro IDE refreshes)
+  path.join(HOME, ".aws/sso/cache/kiro-auth-token-cli.json"),   // cli token (fallback)
+];
+
+function readKiroAuthToken() {
+  // Priority 1 — sqlite auth_kv (kiro-cli's primary store; refreshed in
+  // the background by `kiro-cli` itself). The legacy json file under
+  // ~/.aws/sso/cache is sometimes stale because kiro-cli only flushes it
+  // opportunistically; sqlite is always fresh.
+  try {
+    const rows = sqlite(`SELECT value FROM auth_kv WHERE key='kirocli:odic:token' LIMIT 1`);
+    const v = rows[0]?.value;
+    if (v) {
+      const j = JSON.parse(v);
+      const exp = j.expires_at || j.expiresAt;
+      const accessToken = j.access_token || j.accessToken;
+      if (accessToken && exp && new Date(exp).getTime() > Date.now()) {
+        return { accessToken, region: j.region || "us-east-1", source: "sqlite" };
+      }
+    }
+  } catch {}
+
+  // Priority 2 — json file (older path, still used by AWS SSO tooling).
+  for (const f of KIRO_AUTH_TOKEN_FILES) {
+    try {
+      const j = JSON.parse(fs.readFileSync(f, "utf8"));
+      if (!j.accessToken || !j.expiresAt) continue;
+      // Skip expired tokens (kiro keeps refreshing the .json file in place).
+      if (new Date(j.expiresAt).getTime() < Date.now()) continue;
+      return { accessToken: j.accessToken, region: j.region || "us-east-1", source: "file" };
+    } catch {}
+  }
+  return null;
+}
+
+function readKiroProfileArn() {
+  try {
+    const rows = sqlite(`SELECT value FROM state WHERE key='api.codewhisperer.profile' LIMIT 1`);
+    if (!rows[0]?.value) return null;
+    const j = JSON.parse(rows[0].value);
+    return j.arn || null;
+  } catch { return null; }
+}
+
+async function fetchKiroQuotaOnce() {
+  if (KIRO_QUOTA.inFlight) return;
+  const tok = readKiroAuthToken();
+  const arn = readKiroProfileArn();
+  if (!tok || !arn) {
+    KIRO_QUOTA.error = !tok ? "no valid kiro auth token (re-login may be needed)" : "no profileArn in kiro state";
+    return;
+  }
+  KIRO_QUOTA.inFlight = true;
+  try {
+    // Endpoint follows the token's home region; falls back to us-east-1.
+    const url = KIRO_QUOTA_ENDPOINTS.default;
+    const body = JSON.stringify({ profileArn: arn });
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-amz-json-1.0",
+        "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
+        "Authorization": `Bearer ${tok.accessToken}`,
+      },
+      body,
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      KIRO_QUOTA.error = `HTTP ${resp.status}: ${text.slice(0, 200)}`;
+      return;
+    }
+    const json = JSON.parse(text);
+    KIRO_QUOTA.data = json;
+    KIRO_QUOTA.fetchedAt = Date.now();
+    KIRO_QUOTA.error = null;
+  } catch (e) {
+    KIRO_QUOTA.error = String(e?.message || e);
+  } finally {
+    KIRO_QUOTA.inFlight = false;
+  }
+}
+
+// Initial fetch — refresh on demand only (WS connect, frontend mount, user click).
+// Match kiro IDE's behavior: no background polling.
+fetchKiroQuotaOnce();
+
+function summarizeKiroQuota() {
+  const d = KIRO_QUOTA.data;
+  if (!d) return { available: false, error: KIRO_QUOTA.error };
+  const credit = (d.usageBreakdownList || []).find((b) => b.resourceType === "CREDIT") || {};
+  return {
+    available: true,
+    fetchedAt: KIRO_QUOTA.fetchedAt,
+    plan: d.subscriptionInfo?.subscriptionTitle || d.subscriptionInfo?.type || "Unknown",
+    used: credit.currentUsageWithPrecision ?? credit.currentUsage ?? 0,
+    limit: credit.usageLimitWithPrecision ?? credit.usageLimit ?? 0,
+    overage: credit.currentOveragesWithPrecision ?? credit.currentOverages ?? 0,
+    overageCap: credit.overageCapWithPrecision ?? credit.overageCap ?? 0,
+    overageEnabled: d.overageConfiguration?.overageStatus === "ENABLED",
+    nextResetAt: d.nextDateReset ? d.nextDateReset * 1000 : null,
+    raw: d, // full body for power users
+  };
+}
+
 function readMcpFile(file, scope, projectPath) {
   try {
     const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -719,6 +854,8 @@ wss.on("connection", (ws, req) => {
   // Re-read settings from disk so that permissionMode persisted by acp.js (set_permission_mode)
   // is picked up on the next WS connect, even if this server.js process never received the PATCH.
   try { Object.assign(USER_SETTINGS, JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"))); } catch {}
+  // Refresh quota on each new WS connect (mirrors kiro IDE: only refresh on session start).
+  fetchKiroQuotaOnce();
   startAcpBridge({ ws, sessionId, cwd, model: meta?.model, agent, resumeId, permissionMode: meta?.permissionMode || USER_SETTINGS.permissionMode, kiro: KIRO });
 });
 

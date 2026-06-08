@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getBaseUrl } from '../../api/client'
 
 export type QuotaSummary = {
@@ -30,9 +30,28 @@ export type QuotaDerived = {
 //   1. mount (one-time, reads adapter cache)
 //   2. user click (force ?refresh=1)
 //   3. WS new session (handled adapter-side)
+//
+// Fallback retry: if mount fetch returns `available:false` (token may
+// have just expired and kiro-cli's background refresh is still in flight),
+// silently retry with force=1 after 2s and 6s. This handles the common
+// case where the desktop app is opened at the exact moment the token is
+// rolling over. After 2 failed retries we leave the unavailable state
+// visible so the user can act on it.
+const FALLBACK_DELAYS_MS = [2000, 6000] as const
+
 export function useQuotaSummary() {
   const [data, setData] = useState<QuotaSummary | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fallbackAttemptRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  const clearFallback = () => {
+    if (fallbackTimerRef.current) {
+      clearTimeout(fallbackTimerRef.current)
+      fallbackTimerRef.current = null
+    }
+  }
 
   const fetchQuota = useCallback(async (forceRefresh: boolean) => {
     try {
@@ -41,19 +60,62 @@ export function useQuotaSummary() {
       const r = await fetch(url)
       if (!r.ok) {
         // adapter returned non-200 (e.g. token expired) -> mark unavailable but keep card visible
+        if (!mountedRef.current) return
         setData({ available: false, error: `HTTP ${r.status}` })
+        scheduleFallbackIfNeeded()
         return
       }
       const j = (await r.json()) as QuotaSummary
+      if (!mountedRef.current) return
       setData(j)
+      if (j.available) {
+        // Real data arrived — cancel any pending retry and reset counter.
+        clearFallback()
+        fallbackAttemptRef.current = 0
+      } else {
+        scheduleFallbackIfNeeded()
+      }
     } catch (e) {
+      if (!mountedRef.current) return
       setData({ available: false, error: e instanceof Error ? e.message : 'fetch failed' })
+      scheduleFallbackIfNeeded()
     } finally {
-      if (forceRefresh) setRefreshing(false)
+      if (forceRefresh && mountedRef.current) setRefreshing(false)
     }
   }, [])
 
-  useEffect(() => { void fetchQuota(false) }, [fetchQuota])
+  // Schedule next silent retry if we still have budget. Each retry forces
+  // adapter to bypass its own cache so kiro-cli's freshly-rolled token is
+  // actually exercised.
+  const scheduleFallbackIfNeeded = () => {
+    const attempt = fallbackAttemptRef.current
+    if (attempt >= FALLBACK_DELAYS_MS.length) return
+    const delay = FALLBACK_DELAYS_MS[attempt]
+    if (delay === undefined) return
+    clearFallback()
+    fallbackTimerRef.current = setTimeout(() => {
+      fallbackTimerRef.current = null
+      fallbackAttemptRef.current = attempt + 1
+      void fetchQuota(true)
+    }, delay)
+  }
+
+  useEffect(() => {
+    mountedRef.current = true
+    void fetchQuota(false)
+    return () => {
+      mountedRef.current = false
+      clearFallback()
+    }
+  }, [fetchQuota])
+
+  const manualRefresh = useCallback(() => {
+    // User-initiated refresh — reset retry counter so any subsequent
+    // automatic fallbacks start fresh from this click.
+    fallbackAttemptRef.current = 0
+    clearFallback()
+    void fetchQuota(true)
+  }, [fetchQuota])
 
   const derive = (q: QuotaSummary | null): QuotaDerived => {
     if (!q || !q.available) {
@@ -93,7 +155,7 @@ export function useQuotaSummary() {
   return {
     data,
     refreshing,
-    refresh: () => void fetchQuota(true),
+    refresh: manualRefresh,
     derived: derive(data),
   }
 }
