@@ -1345,43 +1345,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
         }
 
-        // ACP-assigned UUID may differ from the temporary `new-...` id we got
-        // from POST /api/sessions. Migrate every per-session store key so a
-        // later click on the sidebar entry (which uses the real UUID) lands
-        // on this same tab instead of opening a duplicate.
-        const realId = msg.acpSessionId
-        if (realId && realId !== sessionId && sessionId.startsWith('new-')) {
-          // 1) WS connection map
-          wsManager.renameSession(sessionId, realId)
-          // 2) chatStore.sessions key
-          set((s) => {
-            const moved = s.sessions[sessionId]
-            if (!moved || s.sessions[realId]) return s
-            const next: Record<string, PerSessionState> = { ...s.sessions }
-            delete next[sessionId]
-            next[realId] = moved
-            return { sessions: next }
-          })
-          // 3) tabStore — already supports rename via replaceTabSession
-          useTabStore.getState().replaceTabSession(sessionId, realId)
-          // 4) runtime selection (model + effort) follows the new id
-          useSessionRuntimeStore.getState().moveSelection(sessionId, realId)
-          // 5) sessionStore list — swap the optimistic id for the real one;
-          //    a follow-up fetchSessions() will reconcile any drift.
-          const sessionStore = useSessionStore.getState()
-          const sessions = sessionStore.sessions
-          if (sessions.some((s) => s.id === sessionId)) {
-            const swapped = sessions.map((s) =>
-              s.id === sessionId ? { ...s, id: realId } : s,
-            )
-            // dedupe in case a parallel fetch already pulled in realId
-            const seen = new Set<string>()
-            const deduped = swapped.filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)))
-            useSessionStore.setState({ sessions: deduped })
-          }
-          // Ask the backend for an authoritative listing in the background.
-          void sessionStore.fetchSessions().catch(() => undefined)
-        }
+        // NOTE on temp-id → real-UUID migration: an earlier attempt to rewrite
+        // chatStore.sessions / wsManager.connections / tabStore keys here on
+        // 'connected' broke streaming — the WS handler closure captured the old
+        // 'new-...' sessionId, and after the rename handleServerMessage couldn't
+        // find that key in chatStore.sessions, so message_complete was a no-op
+        // and the UI stayed on "thinking" forever.
+        //
+        // The duplicate-tab symptom (clicking the sidebar entry for a fresh
+        // session opens a second tab because sidebar shows the real UUID while
+        // the tab still uses 'new-...') needs a different fix: a sessionId
+        // alias table consulted by openTab(), not store-wide key rewriting.
+        // Tracked for a follow-up.
         break
       }
 
