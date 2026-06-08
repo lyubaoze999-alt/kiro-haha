@@ -195,11 +195,33 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
       }
       return update
     } catch (error) {
+      const msg = getErrorMessage(error)
+      // GitHub releases/latest 404s when no release is published yet — the
+      // tauri-plugin-updater surfaces this as "Could not fetch a valid release
+      // JSON from the remote". This isn't an error to show users; it just
+      // means there's nothing newer to update to.
+      const isMissingRelease = /could not fetch.*valid release json|releases\/latest.*404|404.*releases|no release/i.test(msg)
+      if (isMissingRelease) {
+        writeDismissedUpdateVersion(null)
+        set((state) => ({
+          ...state,
+          status: 'up-to-date',
+          availableVersion: null,
+          releaseNotes: null,
+          progressPercent: 0,
+          downloadedBytes: 0,
+          totalBytes: null,
+          checkedAt: Date.now(),
+          error: null,
+          shouldPrompt: false,
+        }))
+        return null
+      }
       if (!silent) {
         set((state) => ({
           ...state,
           status: 'error',
-          error: getErrorMessage(error),
+          error: msg,
           checkedAt: Date.now(),
         }))
       } else {
