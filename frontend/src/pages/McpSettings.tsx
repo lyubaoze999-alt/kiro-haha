@@ -693,6 +693,14 @@ export function McpSettings() {
         ? await updateServer(view.server, payload, operationCwd)
         : await createServer(draft.name.trim(), payload, operationCwd)
 
+      // Hot-plug: auto-enable the newly created MCP server for the current
+      // session so it takes effect immediately without restarting.
+      if (view.type !== 'edit' && activeSessionId) {
+        void toggleServer(saved, operationCwd, activeSessionId).catch(() => {
+          // Session enable is best-effort; the config save already succeeded.
+        })
+      }
+
       addToast({
         type: 'success',
         message: view.type === 'edit'
