@@ -1820,9 +1820,20 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
             rewindAction={
               item.message.type === 'user_text'
                 ? (() => {
-                    const target = completedTurnTargets.find((c) => c.messageId === item.message.id)
-                    if (!target) return undefined
-                    return () => { void handleRewindToTarget(target) }
+                    const msg = item.message as Extract<UIMessage, { type: 'user_text' }>
+                    const target = completedTurnTargets.find((c) => c.messageId === msg.id)
+                    if (target) return () => { void handleRewindToTarget(target) }
+                    // No checkpoint — still truncate like Kiro IDE.  Build a
+                    // minimal target from the message itself so the pencil
+                    // button always truncates + prefills, never just copies.
+                    const minimal: RewindTurnTarget = {
+                      messageId: msg.id,
+                      userMessageIndex: 0,
+                      content: msg.content,
+                      expectedContent: msg.content,
+                      attachments: msg.attachments,
+                    }
+                    return () => { void handleRewindToTarget(minimal) }
                   })()
                 : undefined
             }
@@ -1991,12 +2002,7 @@ export const MessageBlock = memo(function MessageBlock({
             attachments={message.attachments}
             branchAction={branchAction}
             timestamp={message.timestamp}
-            onEdit={rewindAction ?? (sessionId ? () => {
-              useChatStore.getState().queueComposerPrefill(sessionId, {
-                text: message.content,
-                attachments: message.attachments,
-              })
-            } : undefined)}
+            onEdit={rewindAction}
           />
         </SelectableChatMessage>
       )
