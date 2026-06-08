@@ -9,6 +9,7 @@ import type {
 } from '../../api/sessions'
 import { useTranslation } from '../../i18n'
 import { useShallow } from 'zustand/react/shallow'
+import { RuntimeContextCard } from './RuntimeContextCard'
 import {
   useWorkspacePanelStore,
   type WorkspacePreviewCloseScope,
@@ -1409,6 +1410,7 @@ export function WorkspacePanel({ sessionId, embedded = false }: WorkspacePanelPr
       <div
         className={`${hasPreviewTabs ? 'basis-[32%] min-w-[220px] max-w-[320px]' : 'w-full'} flex h-full shrink-0 flex-col bg-[var(--color-surface)]`}
       >
+        <RuntimeContextCard sessionId={sessionId} />
         <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-[var(--color-border)] px-2.5">
           <div className="relative min-w-0">
             <button

@@ -42,6 +42,8 @@ import {
 } from '../../lib/composerAttachments'
 import { useComposerFileDrop } from './useComposerFileDrop'
 import { shouldSubmitOnEnter } from './sendShortcut'
+import { useKiroAcpStore, wrapPrompt } from '../../stores/kiroAcpStore'
+import { ChatModeSelector } from './ChatModeSelector'
 
 type GitInfo = SessionGitInfo
 
@@ -569,7 +571,13 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     const workspaceReferencePrompt = !isMemberSession
       ? formatWorkspaceReferencePrompt(workspaceReferences)
       : ''
-    const contentForModel = [workspaceReferencePrompt, text].filter(Boolean).join('\n\n')
+    const rawContentForModel = [workspaceReferencePrompt, text].filter(Boolean).join('\n\n')
+    // Kiro ACP Client: wrap prompt according to current ChatMode (auto/debug/plain)
+    // Note: never inline SKILL.md or steering full text — Kiro Agent reads them via cwd.
+    const composerChatMode = useKiroAcpStore.getState().chatMode
+    const contentForModel = !isMemberSession && rawContentForModel
+      ? wrapPrompt(rawContentForModel, composerChatMode)
+      : rawContentForModel
     const displayContent = text || (
       workspaceReferences.length > 0
         ? t('chat.contextReferencesOnly', { count: workspaceReferences.length })
@@ -1146,6 +1154,9 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                   fallbackModelLabel={runtimeModelLabel}
                   compact={useCompactControls}
                 />
+              )}
+              {!isMemberSession && activeTabId && (
+                <ChatModeSelector compact={useCompactControls} />
               )}
               {!isMemberSession && activeTabId && (
                 <ModelSelector runtimeKey={activeTabId} disabled={isActive} compact={useCompactControls} />

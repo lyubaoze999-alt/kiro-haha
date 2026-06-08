@@ -45,6 +45,10 @@ export type SettingsTab =
   | 'computerUse'
   | 'diagnostics'
   | 'about'
+  | 'workspace'
+  | 'kiroAcp'
+  | 'steering'
+  | 'kiroSkills'
 
 type ActiveView = 'code' | 'scheduled' | 'terminal' | 'history' | 'settings'
 

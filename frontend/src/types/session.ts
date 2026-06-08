@@ -11,6 +11,7 @@ export type SessionListItem = {
   workDir: string | null
   workDirExists: boolean
   permissionMode?: string
+  workspaceId?: string
 }
 
 export type MessageEntry = {
