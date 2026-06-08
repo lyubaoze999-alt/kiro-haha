@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
 import { skillsApi } from '../api/skills'
+import { sessionsApi } from '../api/sessions'
+import { pickDefaultWorkDir } from '../utils/pickDefaultWorkDir'
 import { useTranslation } from '../i18n'
 import { useSessionStore } from '../stores/sessionStore'
 import { useChatStore } from '../stores/chatStore'
@@ -123,6 +125,38 @@ export function EmptySession() {
 
   useEffect(() => {
     textareaRef.current?.focus()
+  }, [])
+
+  // Pre-fill workDir on mount so the user lands with a sensible default
+  // project chip instead of an empty placeholder. Without this, sending
+  // a message immediately would create the session in $HOME which isn't
+  // visible as a project group in the sidebar.
+  //
+  // Skip if the user has already picked something (handleWorkDirChange
+  // sets workDir before this effect runs in some race conditions).
+  useEffect(() => {
+    let cancelled = false
+    if (workDir) return
+    const sessions = useSessionStore.getState().sessions
+    const currentTabId = useTabStore.getState().activeTabId
+    const currentSession = currentTabId
+      ? sessions.find((s) => s.id === currentTabId) ?? null
+      : null
+    sessionsApi.getRecentProjects(50)
+      .then(({ projects }) => {
+        if (cancelled) return
+        // Re-read sessions in case they finished loading after recentProjects.
+        const freshSessions = useSessionStore.getState().sessions
+        const picked = pickDefaultWorkDir({ currentSession, sessions: freshSessions, recentProjects: projects })
+        if (picked.workDir) {
+          handleWorkDirChange(picked.workDir)
+        }
+      })
+      .catch(() => { /* silent: empty composer just shows placeholder */ })
+    return () => { cancelled = true }
+    // Intentionally omitting handleWorkDirChange — it's stable enough and
+    // re-running this effect would override the user's selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {

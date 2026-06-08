@@ -11,6 +11,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
 import { desktopUiPreferencesApi, type SidebarProjectPreferences } from '../../api/desktopUiPreferences'
 import { SidebarQuotaCard } from './SidebarQuotaCard'
+import { pickDefaultWorkDir } from '../../utils/pickDefaultWorkDir'
 
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
 const isWindows = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
@@ -696,63 +697,24 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
             // Pick a sane default workDir so the user can immediately type-and-send
             // without first picking a folder. Without this, kiro-haha sends sessions
             // to $HOME which makes them invisible in the project sidebar.
-            //   1) current tab's session workDir (preserves "stay in this project")
-            //   2) most-recently-modified existing session's workDir
-            //   3) most-recently-modified entry from recentProjects
-            //   4) undefined -> adapter falls back to HOME
             const sessions = useSessionStore.getState().sessions
             const currentTabId = useTabStore.getState().activeTabId
             const currentSession = currentTabId
-              ? sessions.find((s) => s.id === currentTabId)
+              ? sessions.find((s) => s.id === currentTabId) ?? null
               : null
-
-            let pickedWorkDir: string | undefined
-            let pickedSource: 'current' | 'recent-session' | 'recent-project' | 'none' = 'none'
-
-            if (currentSession?.workDir && currentSession.workDirExists) {
-              pickedWorkDir = currentSession.workDir
-              pickedSource = 'current'
-            } else if (currentSession?.projectRoot) {
-              pickedWorkDir = currentSession.projectRoot
-              pickedSource = 'current'
-            } else {
-              const newestSession = [...sessions]
-                .filter((s) => s.workDir && s.workDirExists)
-                .sort((a, b) => {
-                  const ta = new Date(a.modifiedAt || 0).getTime()
-                  const tb = new Date(b.modifiedAt || 0).getTime()
-                  return tb - ta
-                })[0]
-              if (newestSession?.workDir) {
-                pickedWorkDir = newestSession.workDir
-                pickedSource = 'recent-session'
-              } else {
-                const newestProject = [...recentProjects]
-                  .filter((p) => p.projectPath)
-                  .sort((a, b) => {
-                    const ta = new Date(a.modifiedAt || 0).getTime()
-                    const tb = new Date(b.modifiedAt || 0).getTime()
-                    return tb - ta
-                  })[0]
-                if (newestProject?.projectPath) {
-                  pickedWorkDir = newestProject.projectPath
-                  pickedSource = 'recent-project'
-                }
-              }
-            }
+            const picked = pickDefaultWorkDir({ currentSession, sessions, recentProjects })
 
             // Tell the user which folder we picked so they're not surprised.
             // Skip the toast when we're re-using the active tab's project — that's
             // the obvious case and a toast would be noisy.
-            if (pickedWorkDir && pickedSource !== 'current') {
-              const folderName = pickedWorkDir.split('/').filter(Boolean).pop() || pickedWorkDir
+            if (picked.workDir && picked.source !== 'current-tab' && picked.folderLabel) {
               addToast({
                 type: 'info',
-                message: t('sidebar.newSessionDefaultFolder', { folder: folderName }),
+                message: t('sidebar.newSessionDefaultFolder', { folder: picked.folderLabel }),
               })
             }
 
-            void createSessionForWorkDir(pickedWorkDir)
+            void createSessionForWorkDir(picked.workDir)
           }}
           icon={<PlusIcon />}
         >
