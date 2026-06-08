@@ -1,17 +1,4 @@
 const HTML_EXT = /\.(html?|xhtml)$/i
-const INDEX_HTML_RE = /(^|\/)index\.html?$/i
-
-const STATIC_OUTPUT_DIRS = new Set([
-  'build',
-  'coverage',
-  'dist',
-  'docs',
-  'lcov-report',
-  'out',
-  'public',
-  'site',
-  'storybook-static',
-])
 
 function normalizePathForPolicy(filePath: string): string {
   return filePath
@@ -27,10 +14,10 @@ export function isHtmlFilePath(filePath: string): boolean {
 export function shouldOfferStaticHtmlPreview(filePath: string): boolean {
   const normalized = normalizePathForPolicy(filePath)
   if (!HTML_EXT.test(normalized)) return false
-  if (!INDEX_HTML_RE.test(normalized)) return true
-
-  return normalized
-    .split('/')
-    .filter(Boolean)
-    .some((segment) => STATIC_OUTPUT_DIRS.has(segment.toLowerCase()))
+  // All HTML files are eligible for browser preview — users expect
+  // clicking a generated HTML result to open the preview directly,
+  // not the code view.  The server can serve any HTML file under the
+  // session work dir via /preview-fs, so there's no technical reason
+  // to restrict this to known static-output directories.
+  return true
 }

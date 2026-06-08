@@ -64,12 +64,17 @@ describe('handlePreviewLink', () => {
     expect(deps.openFilePreview).not.toHaveBeenCalled()
   })
 
-  it('routes a frontend project index.html to workspace preview instead of static browser preview', () => {
+  it('routes a frontend project index.html to browser preview (all HTML now eligible)', () => {
     const deps = makeDeps()
     const handled = handlePreviewLink('todo-app/index.html', deps)
     expect(handled).toBe(true)
-    expect(deps.openFilePreview).toHaveBeenCalledWith('s1', 'todo-app/index.html')
-    expect(deps.openBrowser).not.toHaveBeenCalled()
+    // All HTML files are now eligible for browser preview — users expect
+    // clicking a generated HTML result to open the preview directly.
+    expect(deps.openBrowser).toHaveBeenCalledWith(
+      's1',
+      'http://127.0.0.1:8787/preview-fs/s1/todo-app/index.html',
+    )
+    expect(deps.openFilePreview).not.toHaveBeenCalled()
   })
 
   it('routes relative previewable docs to openFilePreview with the relative path', () => {
