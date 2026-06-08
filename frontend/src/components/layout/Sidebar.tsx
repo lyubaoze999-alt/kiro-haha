@@ -115,22 +115,32 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   }, [contextMenu, projectContextMenu, projectHeaderMenu, projectHeaderSubmenu])
 
   const currentWorkspace = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === s.currentWorkspaceId) || null)
+  // Tab 中打开的 sessionId 集合——用于确保已打开的会话不被 workspace 过滤隐藏
+  const tabSessionIds = useTabStore((s) =>
+    new Set(s.tabs.filter((t) => t.type === 'session').map((t) => t.sessionId)),
+  )
   const filteredSessions = useMemo(() => {
     let result = sessions
     if (currentWorkspace) {
       // Sidebar Workspace 过滤：只显示绑定到当前 Workspace 的 session，
       // 或 workDir 等于 workspace.rootPath 的 session（向后兼容历史 session）
-      result = result.filter((s) => {
+      const workspaceFiltered = result.filter((s) => {
         if (s.workspaceId) return s.workspaceId === currentWorkspace.id
         return s.workDir === currentWorkspace.rootPath || s.projectRoot === currentWorkspace.rootPath
       })
+      // Bug fix: 已打开在 tab 中的 session 不应被 workspace 过滤隐藏，
+      // 否则新建会话后在左侧边栏看不到对应条目。
+      const tabSessions = result.filter(
+        (s) => tabSessionIds.has(s.id) && !workspaceFiltered.some((wf) => wf.id === s.id),
+      )
+      result = [...workspaceFiltered, ...tabSessions]
     }
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       result = result.filter((s) => s.title.toLowerCase().includes(q))
     }
     return result
-  }, [sessions, searchQuery, currentWorkspace])
+  }, [sessions, searchQuery, currentWorkspace, tabSessionIds])
 
   const projectGroups = useMemo(() => {
     const groups = groupByProject(filteredSessions, projectSortBy)
@@ -995,7 +1005,15 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                                       handleBatchSessionClick(event, session.id)
                                       return
                                     }
-                                    useTabStore.getState().openTab(session.id, session.title)
+                                    // Bug fix: 显式检查是否已存在该 session 的 tab，
+                                    // 避免 openTab 在某些情况下重复新建 tab。
+                                    const { tabs } = useTabStore.getState()
+                                    const existingTab = tabs.find(t => t.sessionId === session.id)
+                                    if (existingTab) {
+                                      useTabStore.getState().setActiveTab(session.id)
+                                    } else {
+                                      useTabStore.getState().openTab(session.id, session.title)
+                                    }
                                     useChatStore.getState().connectToSession(session.id)
                                     closeMobileDrawer()
                                   }}
