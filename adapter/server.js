@@ -316,10 +316,47 @@ const server = http.createServer(async (req, res) => {
       }
       if (seg.length === 2 && req.method === "POST") {
         const body = await readBody(req);
-        const workDir = (typeof body.workDir === "string" && body.workDir) || body.repository?.workDir || HOME;
+        let workDir = (typeof body.workDir === "string" && body.workDir) || body.repository?.workDir || HOME;
+        const repo = body.repository || {};
         const id = "new-" + Date.now();
-        NEW_SESSIONS.set(id, { workDir, model: body.model, agent: body.agent, permissionMode: body.permissionMode });
-        return json(res, { sessionId: id, workDir });
+        let worktreeMeta = null;
+
+        // Branch isolation: if the caller asks for a worktree, materialize it
+        // under <repoRoot>/.claude/worktrees/<slug> and run the session there.
+        // This lets two tabs work on different branches of the same repo
+        // simultaneously without `git status` / file edits bleeding across.
+        if (repo.worktree && repo.branch) {
+          const repoRoot = gitRepoRoot(workDir);
+          if (!repoRoot) {
+            return json(res, { error: { code: "NOT_A_GIT_REPO", message: "selected folder is not inside a git repository" } }, 400);
+          }
+          const r = ensureWorktree(repoRoot, String(repo.branch));
+          if (!r.ok) {
+            return json(res, { error: { code: "WORKTREE_FAILED", message: r.error || "failed to create worktree" } }, 500);
+          }
+          workDir = r.worktreePath;
+          worktreeMeta = { path: r.worktreePath, branch: String(repo.branch), reused: !!r.reused };
+        } else if (repo.branch && !repo.worktree) {
+          // branch provided but no worktree — we could `git switch` but that
+          // would mutate the user's working copy and conflict with another
+          // tab using the same dir. Refuse instead and ask the UI to enable
+          // the worktree toggle.
+          return json(res, {
+            error: {
+              code: "BRANCH_REQUIRES_WORKTREE",
+              message: "to switch branches enable the worktree option (otherwise both tabs would share one working copy)",
+            },
+          }, 400);
+        }
+
+        NEW_SESSIONS.set(id, {
+          workDir,
+          model: body.model,
+          agent: body.agent,
+          permissionMode: body.permissionMode,
+          worktree: worktreeMeta,
+        });
+        return json(res, { sessionId: id, workDir, worktree: worktreeMeta });
       }
       if (seg[2] && seg[3] === "messages") return json(res, { messages: conversationMessages(seg[2]) });
       if (seg[2] && seg[3] === "slash-commands") return json(res, { commands: SLASH });
@@ -435,7 +472,25 @@ const server = http.createServer(async (req, res) => {
       if (seg[2] === "repository-context") {
         const wd = url.searchParams.get("workDir") || HOME;
         const g = gitInfo(wd);
-        return json(res, { state: fs.existsSync(wd) ? "ok" : "missing_workdir", workDir: wd, repoRoot: g.isRepo ? wd : null, repoName: g.repoName, currentBranch: g.branch, defaultBranch: g.branch, dirty: g.changedFiles > 0, branches: [], worktrees: [] });
+        const repoRoot = g.isRepo ? gitRepoRoot(wd) : null;
+        const branches = repoRoot ? gitBranches(repoRoot) : [];
+        const worktrees = repoRoot ? gitWorktrees(repoRoot) : [];
+        // defaultBranch heuristic: prefer 'main', then 'master', else current.
+        let defaultBranch = g.branch;
+        const names = new Set(branches.filter((b) => b.local).map((b) => b.name));
+        if (names.has("main")) defaultBranch = "main";
+        else if (names.has("master")) defaultBranch = "master";
+        return json(res, {
+          state: fs.existsSync(wd) ? "ok" : "missing_workdir",
+          workDir: wd,
+          repoRoot,
+          repoName: g.repoName,
+          currentBranch: g.branch,
+          defaultBranch,
+          dirty: g.changedFiles > 0,
+          branches,
+          worktrees,
+        });
       }
       if (seg[2] === "recent-projects") return json(res, { projects: recentProjects(Number(url.searchParams.get("limit")) || 0) });
       if (seg[2] && req.method === "DELETE") {
@@ -1009,6 +1064,177 @@ function gitInfo(cwd) {
     const changed = execSync(`git -C ${JSON.stringify(cwd)} status --porcelain`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
     return { branch, repoName: path.basename(cwd), workDir: cwd, changedFiles: changed ? changed.split("\n").length : 0, worktree: null, isRepo: true };
   } catch { return { branch: null, repoName: null, workDir: cwd, changedFiles: 0, worktree: null, isRepo: false }; }
+}
+
+// ─── git branches + worktrees (multi-tab branch isolation) ────────
+//
+// We model each tab's session as a session-cwd. Two tabs working on the
+// same repo but different branches must use separate worktrees so their
+// `git status` / file edits don't bleed across each other.
+//
+// Convention (matches cc-haha): worktree path = <repoRoot>/.claude/worktrees/<slug>
+
+const WORKTREE_DIR = ".claude/worktrees";
+
+function gitRepoRoot(cwd) {
+  if (!cwd || !fs.existsSync(cwd)) return null;
+  try {
+    return execSync(`git -C ${JSON.stringify(cwd)} rev-parse --show-toplevel`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim() || null;
+  } catch { return null; }
+}
+
+function gitBranches(cwd) {
+  // Returns RepositoryBranchInfo[]:
+  //   { name, current, local, remote, remoteRef?, checkedOut, worktreePath? }
+  const repoRoot = gitRepoRoot(cwd);
+  if (!repoRoot) return [];
+  let raw = "";
+  try {
+    raw = execSync(
+      `git -C ${JSON.stringify(repoRoot)} for-each-ref --format='%(HEAD)|%(refname:short)|%(refname)|%(upstream:short)|%(worktreepath)' refs/heads refs/remotes`,
+      { stdio: ["ignore", "pipe", "ignore"], maxBuffer: 8 * 1024 * 1024 },
+    ).toString();
+  } catch { return []; }
+
+  const map = new Map(); // name -> RepositoryBranchInfo
+  for (const line0 of raw.split("\n")) {
+    // for-each-ref --format='X' wraps each row in single quotes; strip them.
+    const line = line0.replace(/^'/, "").replace(/'$/, "").trim();
+    if (!line) continue;
+    const parts = line.split("|");
+    if (parts.length < 5) continue;
+    const head = parts[0];
+    const shortName = parts[1];
+    const refname = parts[2];
+    const upstream = parts[3];
+    const worktreePath = parts[4];
+
+    if (!shortName) continue;
+    const isRemote = refname.startsWith("refs/remotes/");
+    if (isRemote) {
+      // skip HEAD aliases — refname looks like 'refs/remotes/origin/HEAD',
+      // shortName is 'origin' (not 'origin/HEAD'), so we must check refname.
+      if (refname.endsWith("/HEAD")) continue;
+      // For remote-only branches, store under the local-equivalent name
+      // (so feat-A from origin/feat-A shows up as a selectable branch).
+      const localEquiv = shortName.replace(/^[^/]+\//, "");
+      const existing = map.get(localEquiv);
+      if (existing) {
+        existing.remote = true;
+        existing.remoteRef = shortName;
+      } else {
+        map.set(localEquiv, {
+          name: localEquiv,
+          current: false,
+          local: false,
+          remote: true,
+          remoteRef: shortName,
+          checkedOut: false,
+        });
+      }
+    } else {
+      // Local branch
+      const existing = map.get(shortName);
+      const info = existing || {
+        name: shortName,
+        current: false,
+        local: false,
+        remote: false,
+        checkedOut: false,
+      };
+      info.local = true;
+      info.current = head === "*";
+      info.checkedOut = !!worktreePath;
+      if (worktreePath) info.worktreePath = worktreePath;
+      if (upstream) info.remoteRef = upstream;
+      map.set(shortName, info);
+    }
+  }
+  return [...map.values()].sort((a, b) => {
+    if (a.current !== b.current) return a.current ? -1 : 1;
+    if (a.local !== b.local) return a.local ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function gitWorktrees(cwd) {
+  // Returns RepositoryWorktreeInfo[]: { path, branch, current }
+  const repoRoot = gitRepoRoot(cwd);
+  if (!repoRoot) return [];
+  let raw = "";
+  try {
+    raw = execSync(`git -C ${JSON.stringify(repoRoot)} worktree list --porcelain`, { stdio: ["ignore", "pipe", "ignore"] }).toString();
+  } catch { return []; }
+  const out = [];
+  let cur = null;
+  const flush = () => {
+    if (cur && cur.path) out.push({ path: cur.path, branch: cur.branch || null, current: !!cur.current });
+    cur = null;
+  };
+  // The cwd we started from belongs to one of these worktrees.
+  const cwdAbs = path.resolve(cwd);
+  for (const line of raw.split("\n")) {
+    if (!line) { flush(); continue; }
+    if (line.startsWith("worktree ")) {
+      flush();
+      cur = { path: line.slice("worktree ".length).trim() };
+      cur.current = path.resolve(cur.path) === cwdAbs;
+    } else if (cur && line.startsWith("branch ")) {
+      cur.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    }
+    // detached / bare / locked lines we don't care about for now
+  }
+  flush();
+  return out;
+}
+
+function branchSlug(branch) {
+  return String(branch || "").trim().replace(/[\s/\\:]+/g, "-").replace(/^-+|-+$/g, "") || "branch";
+}
+
+// Materialize a worktree for `branch` under `<repoRoot>/.claude/worktrees/<slug>`.
+// Idempotent: if a worktree for that branch already exists anywhere, reuse it.
+// Returns { ok: true, worktreePath } or { ok: false, error }.
+function ensureWorktree(repoRoot, branch) {
+  if (!repoRoot || !branch) return { ok: false, error: "missing repoRoot or branch" };
+  // 1) Reuse existing worktree for this branch if any (anywhere on disk).
+  const existing = gitWorktrees(repoRoot).find((w) => w.branch === branch && fs.existsSync(w.path));
+  if (existing) return { ok: true, worktreePath: existing.path, reused: true };
+
+  // 2) Reserve target dir <repoRoot>/.claude/worktrees/<slug>
+  const targetBase = path.join(repoRoot, WORKTREE_DIR);
+  fs.mkdirSync(targetBase, { recursive: true });
+  let target = path.join(targetBase, branchSlug(branch));
+  let suffix = 0;
+  while (fs.existsSync(target)) {
+    suffix += 1;
+    target = path.join(targetBase, `${branchSlug(branch)}-${suffix}`);
+    if (suffix > 50) return { ok: false, error: "could not reserve worktree path (too many collisions)" };
+  }
+
+  // 3) Decide whether `branch` exists locally / on origin / not at all.
+  const branches = gitBranches(repoRoot);
+  const local = branches.find((b) => b.name === branch && b.local);
+  const remoteOnly = !local && branches.find((b) => b.name === branch && b.remote);
+
+  let cmd;
+  if (local) {
+    cmd = `git -C ${JSON.stringify(repoRoot)} worktree add ${JSON.stringify(target)} ${JSON.stringify(branch)}`;
+  } else if (remoteOnly && remoteOnly.remoteRef) {
+    // create local branch tracking the remote ref
+    cmd = `git -C ${JSON.stringify(repoRoot)} worktree add -b ${JSON.stringify(branch)} ${JSON.stringify(target)} ${JSON.stringify(remoteOnly.remoteRef)}`;
+  } else {
+    // Brand new branch — create from current HEAD.
+    cmd = `git -C ${JSON.stringify(repoRoot)} worktree add -b ${JSON.stringify(branch)} ${JSON.stringify(target)}`;
+  }
+
+  try {
+    execSync(cmd, { stdio: ["ignore", "pipe", "pipe"] });
+    return { ok: true, worktreePath: target, reused: false };
+  } catch (e) {
+    const stderr = (e.stderr ? e.stderr.toString() : "") || (e.stdout ? e.stdout.toString() : "") || String(e?.message || e);
+    return { ok: false, error: stderr.trim().slice(0, 300) };
+  }
 }
 
 function workspace(kind, cwd, rel, sessionId) {
