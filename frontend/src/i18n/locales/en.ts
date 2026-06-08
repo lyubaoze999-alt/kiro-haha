@@ -1705,10 +1705,10 @@ export const en = {
   'quota.resetOn': 'Resets {date}',
   'quota.warningHint': 'Watch your balance',
   'quota.dangerHint': 'Almost out',
-  'quota.errorTitle': 'Open Kiro IDE to refresh',
-  'quota.errorBody': 'kiro-haha reads your credits from the same auth token Kiro IDE uses. Open Kiro IDE once so it refreshes the token, then come back here.',
+  'quota.errorTitle': 'Run `kiro-cli login` to refresh',
+  'quota.errorBody': 'kiro-haha reads your credits via the kiro-cli auth token. Open a terminal, run `kiro-cli login`, then click retry.',
   'quota.errorMeta': 'Cannot read plan',
-  'quota.emptyAmount': 'Open Kiro IDE to refresh',
+  'quota.emptyAmount': 'Run `kiro-cli login` to refresh',
   'quota.refresh': 'Refresh',
   'quota.retry': 'Retry',
   'quota.clickToRefresh': 'Click to refresh',
@@ -1716,6 +1716,12 @@ export const en = {
   'quota.overageOn': 'Enabled',
   'quota.overageOff': 'Off',
   'quota.lastUpdated': 'Updated {secs}s ago',
+
+  // ─── First-run guide modal ─────────────────────
+  'firstRun.title': 'kiro-haha needs a couple of things',
+  'firstRun.subtitle': 'These prerequisites are required so chat / quota / sessions actually work. Fix them, then click retry.',
+  'firstRun.retry': 'Retry',
+  'firstRun.dismissFor24h': 'Dismiss for 24h',
 } as const
 
 export type TranslationKey = keyof typeof en

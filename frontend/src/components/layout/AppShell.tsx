@@ -3,6 +3,7 @@ import { Sidebar } from './Sidebar'
 import { ContentRouter } from './ContentRouter'
 import { ToastContainer } from '../shared/Toast'
 import { UpdateChecker } from '../shared/UpdateChecker'
+import { FirstRunGuide } from './FirstRunGuide'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useUIStore, type SettingsTab } from '../../stores/uiStore'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
@@ -273,6 +274,7 @@ export function AppShell() {
       </main>
       <ToastContainer />
       <UpdateChecker />
+      <FirstRunGuide />
     </div>
   )
 }

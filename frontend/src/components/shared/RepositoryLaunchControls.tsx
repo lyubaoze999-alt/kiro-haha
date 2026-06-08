@@ -38,6 +38,13 @@ const WORKTREE_MENU_HEIGHT = 126
 const WORKTREE_MENU_WIDTH = 226
 const VIEWPORT_GUTTER = 12
 
+// Feature flag: branch / worktree chips are wired up end-to-end (adapter
+// supports gitBranches / gitWorktrees / ensureWorktree, see
+// feat/branch-isolation), but UX is unfinished — no dedicated worktree
+// cleanup, no spinner during 'git worktree add', no errors-as-toast yet.
+// Hide the entry until the rough edges are sanded down.
+const SHOW_BRANCH_CONTROLS = false
+
 function stateMessage(context: RepositoryContextResult | null, error: string | null) {
   if (error) return error
   if (!context) return null
@@ -351,7 +358,7 @@ export function RepositoryLaunchControls({
           </div>
         )}
 
-        {isGitReady && (
+        {isGitReady && SHOW_BRANCH_CONTROLS && (
           <>
             <span className="hidden h-4 w-px shrink-0 bg-[var(--color-border-separator)] opacity-70 sm:block" aria-hidden="true" />
             <button
