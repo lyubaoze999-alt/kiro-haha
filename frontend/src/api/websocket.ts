@@ -22,6 +22,26 @@ class WebSocketManager {
     return conn?.ws.readyState === WebSocket.OPEN
   }
 
+  /**
+   * Rename the connection key without tearing down the underlying WebSocket.
+   * Called when an ACP session bridge resolves a real UUID after we already
+   * connected with a temporary `new-...` id from POST /api/sessions.
+   *
+   * Note: the WebSocket URL was built from the old id, so the server keeps
+   * routing to the same session — we only swap the client-side map key.
+   */
+  renameSession(oldSessionId: string, newSessionId: string) {
+    if (oldSessionId === newSessionId) return
+    const conn = this.connections.get(oldSessionId)
+    if (!conn) return
+    if (this.connections.has(newSessionId)) {
+      // unlikely but be safe — close the dangling new-id connection first
+      this.connections.delete(newSessionId)
+    }
+    this.connections.set(newSessionId, conn)
+    this.connections.delete(oldSessionId)
+  }
+
   getConnectedSessionIds(): string[] {
     return [...this.connections.keys()]
   }
