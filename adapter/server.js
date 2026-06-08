@@ -9,7 +9,55 @@ const PORT = 3789;
 const HOME = os.homedir();
 process.on("uncaughtException", (e) => console.error("[uncaughtException]", e?.stack || e));
 process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
-const DB = path.join(HOME, "Library/Application Support/kiro-cli/data.sqlite3");
+
+// Cross-platform locations for kiro-cli + Kiro IDE state.
+// kiro-cli writes its sqlite to the platform's app-data dir; we scan a list
+// of candidates and use the first that exists. Falls back to the canonical
+// platform path so a fresh install still has a sensible default.
+function pickFirstExisting(candidates, fallback) {
+  for (const c of candidates) { try { if (c && fs.existsSync(c)) return c; } catch {} }
+  return fallback || candidates[0];
+}
+
+function kiroCliDataDir() {
+  if (process.platform === "win32") {
+    return pickFirstExisting([
+      process.env.APPDATA && path.join(process.env.APPDATA, "kiro-cli"),
+      process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "kiro-cli"),
+      path.join(HOME, "AppData/Roaming/kiro-cli"),
+      path.join(HOME, "AppData/Local/kiro-cli"),
+    ], path.join(HOME, "AppData/Roaming/kiro-cli"));
+  }
+  if (process.platform === "darwin") {
+    return path.join(HOME, "Library/Application Support/kiro-cli");
+  }
+  // Linux / other: prefer XDG_DATA_HOME, then XDG_CONFIG_HOME, then defaults.
+  return pickFirstExisting([
+    process.env.XDG_DATA_HOME && path.join(process.env.XDG_DATA_HOME, "kiro-cli"),
+    path.join(HOME, ".local/share/kiro-cli"),
+    process.env.XDG_CONFIG_HOME && path.join(process.env.XDG_CONFIG_HOME, "kiro-cli"),
+    path.join(HOME, ".config/kiro-cli"),
+  ], path.join(HOME, ".local/share/kiro-cli"));
+}
+
+function kiroIdeDataDir() {
+  // Kiro IDE is an Electron app — same conventions as VS Code.
+  if (process.platform === "win32") {
+    return pickFirstExisting([
+      process.env.APPDATA && path.join(process.env.APPDATA, "Kiro"),
+      path.join(HOME, "AppData/Roaming/Kiro"),
+    ], path.join(HOME, "AppData/Roaming/Kiro"));
+  }
+  if (process.platform === "darwin") {
+    return path.join(HOME, "Library/Application Support/Kiro");
+  }
+  return pickFirstExisting([
+    process.env.XDG_CONFIG_HOME && path.join(process.env.XDG_CONFIG_HOME, "Kiro"),
+    path.join(HOME, ".config/Kiro"),
+  ], path.join(HOME, ".config/Kiro"));
+}
+
+const DB = path.join(kiroCliDataDir(), "data.sqlite3");
 const MCP_JSON = path.join(HOME, ".kiro/settings/mcp.json");
 const SKILLS_DIR = path.join(HOME, ".agent-shared/skills");
 const TITLES_FILE = path.join(HOME, ".kiro-haha-titles.json");
@@ -154,7 +202,7 @@ function browseDir(p, includeFiles, search) {
 }
 
 function kiroIdeProjects() {
-  const vdb = path.join(HOME, "Library/Application Support/Kiro/User/globalStorage/state.vscdb");
+  const vdb = path.join(kiroIdeDataDir(), "User/globalStorage/state.vscdb");
   if (!fs.existsSync(vdb)) return [];
   try {
     const out = execSync(`sqlite3 ${JSON.stringify(vdb)} "SELECT value FROM ItemTable WHERE key='history.recentlyOpenedPathsList'"`, { maxBuffer: 16 * 1024 * 1024 }).toString();
@@ -552,7 +600,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, { tasks: [] });
     }
     if (r === "diagnostics") return json(res, { ok: true, events: [] });
-    if (r === "doctor") return json(res, { checks: [], ok: true });
+    if (r === "doctor") return json(res, runDoctor());
     if (r === "specs") {
       const cwd = url.searchParams.get("cwd") || HOME;
       if (seg.length === 2 && req.method === "POST") {
@@ -798,6 +846,67 @@ function summarizeKiroQuota() {
     nextResetAt: d.nextDateReset ? d.nextDateReset * 1000 : null,
     raw: d, // full body for power users
   };
+}
+
+// First-launch self-check: are the things kiro-haha needs in place?
+//   - kiro-cli binary discoverable
+//   - a non-expired auth token (sqlite preferred, json fallback)
+//   - kiro-cli sqlite reachable (would mean the user has launched kiro-cli at
+//     least once, since it creates the db on first run)
+// Returns { ok, checks: [{ id, label, status: 'ok'|'warn'|'error', detail?, action? }] }
+// The frontend uses this to decide whether to surface a first-run guide modal.
+function runDoctor() {
+  const checks = [];
+
+  // 1) kiro-cli binary
+  let kiroBinPath = null;
+  try {
+    const which = process.platform === "win32" ? "where" : "which";
+    kiroBinPath = execSync(`${which} kiro-cli`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim().split(/\r?\n/)[0] || null;
+  } catch {}
+  if (!kiroBinPath) {
+    // try the canonical fallback paths kiroBin() probes
+    try { if (fs.existsSync(KIRO)) kiroBinPath = KIRO; } catch {}
+  }
+  checks.push(kiroBinPath
+    ? { id: "kiro-cli", label: "kiro-cli", status: "ok", detail: kiroBinPath }
+    : {
+        id: "kiro-cli",
+        label: "kiro-cli",
+        status: "error",
+        detail: "Install kiro-cli first — see https://kiro.dev/cli",
+        action: "install_kiro_cli",
+      });
+
+  // 2) kiro-cli sqlite (created on first chat invocation)
+  const dbExists = (() => { try { return fs.existsSync(DB); } catch { return false; } })();
+  checks.push(dbExists
+    ? { id: "kiro-data", label: "kiro-cli data store", status: "ok", detail: DB }
+    : { id: "kiro-data", label: "kiro-cli data store", status: "warn", detail: `Not found at ${DB}. Will be created after the first kiro-cli invocation.` });
+
+  // 3) auth token (sqlite primary, json fallback) — same lookup that quota uses
+  const tok = readKiroAuthToken();
+  if (tok) {
+    checks.push({ id: "auth-token", label: "Login token", status: "ok", detail: `source=${tok.source} region=${tok.region}` });
+  } else {
+    checks.push({
+      id: "auth-token",
+      label: "Login token",
+      status: "error",
+      detail: "No valid token. Run `kiro-cli login` in a terminal, then click retry.",
+      action: "kiro_cli_login",
+    });
+  }
+
+  // 4) profile arn (set after first session)
+  const arn = readKiroProfileArn();
+  checks.push(arn
+    ? { id: "profile-arn", label: "Codewhisperer profile", status: "ok", detail: arn.slice(0, 80) }
+    : { id: "profile-arn", label: "Codewhisperer profile", status: "warn", detail: "Not set yet. Will appear after the first kiro-cli session." });
+
+  const ok = checks.every((c) => c.status === "ok");
+  const blocking = checks.some((c) => c.status === "error");
+  return { ok, blocking, checks, platform: process.platform, kiroBinPath };
 }
 
 function readMcpFile(file, scope, projectPath) {

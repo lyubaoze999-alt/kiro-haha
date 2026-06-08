@@ -1707,10 +1707,10 @@ export const zh: Record<TranslationKey, string> = {
   'quota.resetOn': '{date} 重置',
   'quota.warningHint': '建议关注余量',
   'quota.dangerHint': '即将用完',
-  'quota.errorTitle': '打开 Kiro IDE 后刷新',
-  'quota.errorBody': 'kiro-haha 沿用 Kiro IDE 的登录 token。打开 Kiro IDE 触发一次 token 刷新，再回到本应用即可重新读取额度。',
+  'quota.errorTitle': '运行 kiro-cli login 重新登录',
+  'quota.errorBody': 'kiro-haha 通过 kiro-cli 的登录 token 读取额度。打开终端运行 `kiro-cli login` 完成登录后，点击「重试」即可恢复。',
   'quota.errorMeta': '无法读取套餐',
-  'quota.emptyAmount': '打开 Kiro IDE 后刷新',
+  'quota.emptyAmount': '运行 kiro-cli login 重新登录',
   'quota.refresh': '刷新',
   'quota.retry': '重试',
   'quota.clickToRefresh': '点击刷新',
@@ -1718,4 +1718,10 @@ export const zh: Record<TranslationKey, string> = {
   'quota.overageOn': '已启用',
   'quota.overageOff': '未启用',
   'quota.lastUpdated': '{secs}s 前更新',
+
+  // ─── First-run guide modal ─────────────────────
+  'firstRun.title': 'kiro-haha 启动前需要确认几项',
+  'firstRun.subtitle': '这些是聊天 / 余额 / 会话能正常工作的前提，处理完后点「重试」。',
+  'firstRun.retry': '重试',
+  'firstRun.dismissFor24h': '24 小时内不再提示',
 }
