@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { Check, ChevronDown, Clock, Folder, FolderOpen, FolderPlus, GitBranch, LoaderCircle, MoreHorizontal, Pin, PinOff, RefreshCw, RotateCcw, SquarePen, X } from 'lucide-react'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useWorkspaceStore } from '../../stores/workspaceStore'
+import { SidebarWorkspaceCard } from './SidebarWorkspaceCard'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import type { SessionListItem } from '../../types/session'
@@ -112,14 +114,23 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
     return () => document.removeEventListener('click', close)
   }, [contextMenu, projectContextMenu, projectHeaderMenu, projectHeaderSubmenu])
 
+  const currentWorkspace = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === s.currentWorkspaceId) || null)
   const filteredSessions = useMemo(() => {
     let result = sessions
+    if (currentWorkspace) {
+      // Sidebar Workspace 过滤：只显示绑定到当前 Workspace 的 session，
+      // 或 workDir 等于 workspace.rootPath 的 session（向后兼容历史 session）
+      result = result.filter((s) => {
+        if (s.workspaceId) return s.workspaceId === currentWorkspace.id
+        return s.workDir === currentWorkspace.rootPath || s.projectRoot === currentWorkspace.rootPath
+      })
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       result = result.filter((s) => s.title.toLowerCase().includes(q))
     }
     return result
-  }, [sessions, searchQuery])
+  }, [sessions, searchQuery, currentWorkspace])
 
   const projectGroups = useMemo(() => {
     const groups = groupByProject(filteredSessions, projectSortBy)
@@ -727,6 +738,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
 
       {expanded ? (
         <>
+          <SidebarWorkspaceCard />
           <div
             data-testid="sidebar-search-controls-section"
             className="sidebar-section sidebar-section--visible relative z-20 flex-none px-3 pb-2"

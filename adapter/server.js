@@ -994,6 +994,369 @@ function listSkills(cwd) {
   return out;
 }
 
+// ---------- Kiro ACP Client: WorkspaceService ----------
+let WORKSPACES_STATE = { workspaces: [], currentWorkspaceId: null };
+try { WORKSPACES_STATE = JSON.parse(fs.readFileSync(WORKSPACES_FILE, "utf8")); } catch {}
+if (!Array.isArray(WORKSPACES_STATE.workspaces)) WORKSPACES_STATE.workspaces = [];
+
+function saveWorkspaces() {
+  try { fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(WORKSPACES_STATE, null, 2)); } catch {}
+}
+function listWorkspaces() { return WORKSPACES_STATE.workspaces; }
+function getCurrentWorkspaceId() { return WORKSPACES_STATE.currentWorkspaceId; }
+function findWorkspace(id) { return WORKSPACES_STATE.workspaces.find((w) => w.id === id); }
+
+function createWorkspace(rootPath, name, agentName) {
+  if (!rootPath || typeof rootPath !== "string") throw new Error("rootPath is required");
+  const abs = path.resolve(rootPath);
+  if (!fs.existsSync(abs)) throw new Error(`directory not found: ${abs}`);
+  const stat = fs.statSync(abs);
+  if (!stat.isDirectory()) throw new Error(`not a directory: ${abs}`);
+  const exist = WORKSPACES_STATE.workspaces.find((w) => w.rootPath === abs);
+  if (exist) {
+    WORKSPACES_STATE.currentWorkspaceId = exist.id;
+    saveWorkspaces();
+    return exist;
+  }
+  const id = "ws-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+  const now = Date.now();
+  const ws = {
+    id, name: (name || path.basename(abs)).trim(), rootPath: abs,
+    agentName: agentName || undefined, createdAt: now, updatedAt: now,
+  };
+  WORKSPACES_STATE.workspaces.push(ws);
+  WORKSPACES_STATE.currentWorkspaceId = id;
+  saveWorkspaces();
+  return ws;
+}
+
+function switchWorkspace(workspaceId) {
+  const ws = findWorkspace(workspaceId);
+  if (!ws) return null;
+  WORKSPACES_STATE.currentWorkspaceId = workspaceId;
+  saveWorkspaces();
+  return ws;
+}
+
+function updateWorkspace(workspaceId, patch) {
+  const ws = findWorkspace(workspaceId);
+  if (!ws) return null;
+  if (patch.name) ws.name = String(patch.name).trim();
+  if (patch.agentName !== undefined) ws.agentName = patch.agentName || undefined;
+  ws.updatedAt = Date.now();
+  saveWorkspaces();
+  return ws;
+}
+
+function deleteWorkspace(workspaceId) {
+  WORKSPACES_STATE.workspaces = WORKSPACES_STATE.workspaces.filter((w) => w.id !== workspaceId);
+  if (WORKSPACES_STATE.currentWorkspaceId === workspaceId) {
+    WORKSPACES_STATE.currentWorkspaceId = WORKSPACES_STATE.workspaces[0]?.id || null;
+  }
+  saveWorkspaces();
+}
+
+function validateWorkspace(rootPath) {
+  const result = {
+    rootPath: rootPath || "", exists: false, hasKiroDir: false,
+    skillsCount: 0, steeringCount: 0, hasSettings: false, warnings: [],
+  };
+  if (!rootPath) { result.warnings.push("rootPath 为空"); return result; }
+  const abs = path.resolve(rootPath);
+  result.rootPath = abs;
+  result.exists = fs.existsSync(abs);
+  if (!result.exists) { result.warnings.push("目录不存在"); return result; }
+  const kiroDir = path.join(abs, ".kiro");
+  result.hasKiroDir = fs.existsSync(kiroDir);
+  if (!result.hasKiroDir) { result.warnings.push("未发现 .kiro 目录"); return result; }
+  try {
+    const skillsDir = path.join(kiroDir, "skills");
+    if (fs.existsSync(skillsDir)) {
+      result.skillsCount = fs.readdirSync(skillsDir).filter((d) => fs.existsSync(path.join(skillsDir, d, "SKILL.md"))).length;
+    }
+  } catch {}
+  try {
+    const steeringDir = path.join(kiroDir, "steering");
+    if (fs.existsSync(steeringDir)) {
+      result.steeringCount = fs.readdirSync(steeringDir).filter((f) => /\.(md|markdown)$/i.test(f)).length;
+    }
+  } catch {}
+  result.hasSettings = fs.existsSync(path.join(kiroDir, "settings"));
+  return result;
+}
+
+// ---------- Kiro ACP Client: KiroConfig ----------
+function getKiroConfig() {
+  return {
+    cliPath: USER_SETTINGS.kiroCliPath || KIRO,
+    defaultAgent: USER_SETTINGS.kiroDefaultAgent || USER_SETTINGS.defaultAgent || "kiro_default",
+    trustAllTools: USER_SETTINGS.kiroTrustAllTools === true,
+    globalSkillRoot: USER_SETTINGS.kiroGlobalSkillRoot || DEFAULT_GLOBAL_SKILLS_DIR,
+  };
+}
+function updateKiroConfig(patch) {
+  if (typeof patch.cliPath === "string") USER_SETTINGS.kiroCliPath = patch.cliPath;
+  if (typeof patch.defaultAgent === "string") USER_SETTINGS.kiroDefaultAgent = patch.defaultAgent;
+  if (typeof patch.trustAllTools === "boolean") USER_SETTINGS.kiroTrustAllTools = patch.trustAllTools;
+  if (typeof patch.globalSkillRoot === "string") USER_SETTINGS.kiroGlobalSkillRoot = patch.globalSkillRoot;
+  try { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(USER_SETTINGS, null, 2)); } catch {}
+  return getKiroConfig();
+}
+
+// ---------- Kiro ACP Client: SkillService ----------
+import crypto from "node:crypto";
+
+function computeSkillHash(skillMdPath) {
+  try {
+    const c = fs.readFileSync(skillMdPath, "utf8");
+    return crypto.createHash("sha256").update(c).digest("hex").slice(0, 16);
+  } catch { return ""; }
+}
+
+function parseSkillFrontmatter(content) {
+  // 支持 YAML frontmatter（--- ... ---）或顶部行式键值
+  const fm = { name: "", description: "", inclusionMode: "unknown", version: "" };
+  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  const block = fmMatch ? fmMatch[1] : content.slice(0, 800);
+  const get = (k) => {
+    const m = block.match(new RegExp(`^${k}\\s*:\\s*(.+)$`, "m"));
+    return m ? m[1].replace(/^['"]|['"]$/g, "").trim() : "";
+  };
+  fm.name = get("name");
+  fm.description = get("description");
+  const inc = get("inclusionMode") || get("inclusion");
+  if (["always", "auto", "manual", "fileMatch"].includes(inc)) fm.inclusionMode = inc;
+  fm.version = get("version");
+  return fm;
+}
+
+function checkSkillHealth(skill) {
+  const warnings = [];
+  if (!skill.skillMdPath) return { ...skill, status: "error", warnings: ["缺少 SKILL.md"] };
+  if (!skill.description || skill.description.trim().length === 0) warnings.push("description 为空");
+  else if (skill.description.length < 40) warnings.push("description 太短，可能不利于 auto 命中");
+  if (skill.inclusionMode === "manual") warnings.push("manual 在 ACP 场景下不易自动触发");
+  if (skill.inclusionMode === "fileMatch") warnings.push("fileMatch 依赖 IDE 文件上下文，ACP 场景不稳定");
+  return { ...skill, status: warnings.length > 0 ? "warning" : "ok", warnings };
+}
+
+function buildSkillMeta(skillDir, source) {
+  const skillMdPath = path.join(skillDir, "SKILL.md");
+  if (!fs.existsSync(skillMdPath)) return null;
+  const content = fs.readFileSync(skillMdPath, "utf8");
+  const fm = parseSkillFrontmatter(content);
+  const dirName = path.basename(skillDir);
+  const meta = {
+    id: `${source}:${dirName}`,
+    name: fm.name || dirName,
+    path: skillDir,
+    skillMdPath,
+    inclusionMode: fm.inclusionMode || "unknown",
+    description: fm.description || "",
+    version: fm.version || undefined,
+    hash: computeSkillHash(skillMdPath),
+    status: "ok",
+    warnings: [],
+  };
+  return checkSkillHealth(meta);
+}
+
+function scanGlobalSkills(globalSkillRoot) {
+  const root = globalSkillRoot || getKiroConfig().globalSkillRoot;
+  const out = [];
+  try {
+    if (!fs.existsSync(root)) return out;
+    for (const d of fs.readdirSync(root)) {
+      const skillDir = path.join(root, d);
+      if (!fs.statSync(skillDir).isDirectory()) continue;
+      const meta = buildSkillMeta(skillDir, "global");
+      if (meta) {
+        let updatedAt = 0;
+        try { updatedAt = fs.statSync(meta.skillMdPath).mtimeMs; } catch {}
+        out.push({ ...meta, rootPath: root, updatedAt });
+      }
+    }
+  } catch {}
+  return out;
+}
+
+function readSyncMeta(projectSkillDir) {
+  const f = path.join(projectSkillDir, ".cc-haha-sync.json");
+  try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; }
+}
+
+function getSyncStatus(globalHash, projectHash, syncMeta) {
+  if (!projectHash) return "not_installed";
+  if (!syncMeta) return "local";
+  if (projectHash === globalHash) return "synced";
+  const sourceHash = syncMeta.sourceHash;
+  if (projectHash === sourceHash && globalHash !== sourceHash) return "outdated";
+  if (projectHash !== sourceHash && globalHash === sourceHash) return "modified";
+  if (projectHash !== sourceHash && globalHash !== sourceHash) return "conflict";
+  return "synced";
+}
+
+function scanProjectSkills(projectRoot) {
+  const out = [];
+  if (!projectRoot) return out;
+  const skillsRoot = path.join(projectRoot, ".kiro/skills");
+  if (!fs.existsSync(skillsRoot)) return out;
+  const globalIndex = new Map(scanGlobalSkills().map((s) => [s.name, s]));
+  try {
+    for (const d of fs.readdirSync(skillsRoot)) {
+      const skillDir = path.join(skillsRoot, d);
+      if (!fs.statSync(skillDir).isDirectory()) continue;
+      const meta = buildSkillMeta(skillDir, "project");
+      if (!meta) continue;
+      const syncMeta = readSyncMeta(skillDir);
+      const sourceSkill = syncMeta ? globalIndex.get(syncMeta.globalSkillId) : globalIndex.get(meta.name);
+      const syncStatus = getSyncStatus(sourceSkill?.hash, meta.hash, syncMeta);
+      out.push({
+        ...meta, projectRoot,
+        source: syncMeta ? "global" : "project",
+        sourceSkillId: syncMeta?.globalSkillId,
+        installedAt: syncMeta?.syncedAt,
+        lastSyncedAt: syncMeta?.syncedAt,
+        syncStatus,
+      });
+    }
+  } catch {}
+  return out;
+}
+
+function copyDirRecursive(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const sp = path.join(src, e.name); const dp = path.join(dst, e.name);
+    if (e.isDirectory()) copyDirRecursive(sp, dp);
+    else if (e.isFile()) fs.copyFileSync(sp, dp);
+  }
+}
+
+function installGlobalSkillToProject(globalSkillId, projectRoot, overwrite) {
+  if (!projectRoot) throw new Error("projectRoot is required");
+  const all = scanGlobalSkills();
+  const skill = all.find((s) => s.id === globalSkillId || s.name === globalSkillId);
+  if (!skill) throw new Error(`global skill not found: ${globalSkillId}`);
+  const dst = path.join(projectRoot, ".kiro/skills", path.basename(skill.path));
+  if (fs.existsSync(dst) && !overwrite) {
+    const syncMeta = readSyncMeta(dst);
+    if (!syncMeta) throw new Error("项目已存在同名 Skill 且无 sync meta，默认不覆盖");
+  }
+  if (fs.existsSync(dst) && overwrite) fs.rmSync(dst, { recursive: true, force: true });
+  copyDirRecursive(skill.path, dst);
+  const meta = {
+    source: "global", globalSkillId: skill.id, globalPath: skill.path,
+    syncedAt: Date.now(), sourceHash: skill.hash,
+  };
+  fs.writeFileSync(path.join(dst, ".cc-haha-sync.json"), JSON.stringify(meta, null, 2));
+}
+
+function syncGlobalSkillToProject(globalSkillId, projectRoot, overwrite) {
+  // 重新覆盖：把全局最新版本同步到项目
+  return installGlobalSkillToProject(globalSkillId, projectRoot, overwrite === undefined ? true : overwrite);
+}
+
+// ---------- Kiro ACP Client: SteeringService ----------
+function projectSteeringDir(projectRoot) {
+  return path.join(projectRoot, ".kiro/steering");
+}
+
+function checkSteeringHealth(file, content) {
+  const warnings = [];
+  if (!file.name.endsWith(".md") && !file.name.endsWith(".markdown")) warnings.push("建议使用 Markdown 文件，便于 Kiro 和用户阅读");
+  if (!content.trim()) warnings.push("文件内容为空");
+  else if (content.length < 80) warnings.push("内容较短，可能无法形成有效项目规则");
+  if (content.length > 12000) warnings.push("内容较长，建议拆成多个 steering 文件");
+  return { ...file, status: warnings.length > 0 ? "warning" : "ok", warnings };
+}
+
+function buildSteeringMeta(projectRoot, dir, name) {
+  const fp = path.join(dir, name);
+  const stat = fs.statSync(fp);
+  if (!stat.isFile()) return null;
+  const content = fs.readFileSync(fp, "utf8");
+  // description: 取 frontmatter description 或第一段
+  let description = "";
+  const fm = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (fm) {
+    const m = fm[1].match(/^description\s*:\s*(.+)$/m);
+    if (m) description = m[1].replace(/^['"]|['"]$/g, "").trim();
+  }
+  if (!description) {
+    const body = fm ? content.slice(fm[0].length) : content;
+    const para = body.split(/\n\s*\n/).find((p) => p.trim() && !p.trim().startsWith("#"));
+    description = (para || "").trim().slice(0, 200);
+  }
+  const relativePath = path.relative(projectSteeringDir(projectRoot), fp);
+  const meta = {
+    id: relativePath,
+    name,
+    path: fp,
+    projectRoot,
+    relativePath,
+    size: stat.size,
+    updatedAt: stat.mtimeMs,
+    description,
+    status: "ok",
+    warnings: [],
+  };
+  return checkSteeringHealth(meta, content);
+}
+
+function scanProjectSteering(projectRoot) {
+  const out = [];
+  if (!projectRoot) return out;
+  const dir = projectSteeringDir(projectRoot);
+  if (!fs.existsSync(dir)) return out;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const meta = buildSteeringMeta(projectRoot, dir, name);
+      if (meta) out.push(meta);
+    }
+  } catch {}
+  return out;
+}
+
+function readSteeringFile(projectRoot, relativePath) {
+  const fp = path.join(projectSteeringDir(projectRoot), relativePath);
+  try { return fs.readFileSync(fp, "utf8"); } catch { return ""; }
+}
+
+function createSteeringFile(projectRoot, fileName, content) {
+  if (!projectRoot || !fileName) throw new Error("projectRoot and fileName are required");
+  const dir = projectSteeringDir(projectRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  const safe = fileName.replace(/[^\w.\-一-龥]+/g, "-");
+  const finalName = /\.(md|markdown)$/i.test(safe) ? safe : `${safe}.md`;
+  const fp = path.join(dir, finalName);
+  fs.writeFileSync(fp, content || "");
+  return buildSteeringMeta(projectRoot, dir, finalName);
+}
+
+function updateSteeringFile(projectRoot, relativePath, content) {
+  const fp = path.join(projectSteeringDir(projectRoot), relativePath);
+  fs.writeFileSync(fp, content);
+  return buildSteeringMeta(projectRoot, path.dirname(fp), path.basename(fp));
+}
+
+function deleteSteeringFile(projectRoot, relativePath) {
+  const fp = path.join(projectSteeringDir(projectRoot), relativePath);
+  try { fs.unlinkSync(fp); } catch {}
+}
+
+function openSteeringFolder(projectRoot) {
+  const dir = projectSteeringDir(projectRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    if (process.platform === "darwin") execSync(`open ${JSON.stringify(dir)}`);
+    else if (process.platform === "win32") execSync(`start "" ${JSON.stringify(dir)}`);
+    else execSync(`xdg-open ${JSON.stringify(dir)}`);
+    return { ok: true, path: dir };
+  } catch (e) { return { ok: false, path: dir, error: String(e) }; }
+}
+
+
 // ---------- ACP bridge + WS ----------
 import { startAcpBridge, SESSION_META } from "./acp.js";
 const wss = new WebSocketServer({ server, path: undefined });

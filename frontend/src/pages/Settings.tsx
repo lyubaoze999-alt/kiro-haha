@@ -33,6 +33,10 @@ import { MemorySettings } from './MemorySettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { ClaudeOfficialLogin } from '../components/settings/ClaudeOfficialLogin'
 import { ChatGPTOfficialLogin } from '../components/settings/ChatGPTOfficialLogin'
+import { WorkspaceSettings } from '../components/settings/WorkspaceSettings'
+import { KiroAcpSettings } from '../components/settings/KiroAcpSettings'
+import { SteeringSettings } from '../components/settings/SteeringSettings'
+import { KiroSkillsSettings } from '../components/settings/KiroSkillsSettings'
 import { OPENAI_OFFICIAL_PROVIDER_ID } from '../constants/openaiOfficialProvider'
 import { useUpdateStore } from '../stores/updateStore'
 import { formatBytes } from '../lib/formatBytes'
@@ -152,6 +156,10 @@ export function Settings() {
         <div className="w-[180px] border-r border-[var(--color-border)] py-3 flex-shrink-0 flex flex-col">
           <div className="flex-1">
             <TabButton icon="dns" label="Kiro 配置" active={activeTab === 'providers'} onClick={() => setActiveTab('providers')} />
+            <TabButton icon="folder_open" label="Workspace" active={activeTab === 'workspace'} onClick={() => setActiveTab('workspace')} />
+            <TabButton icon="hub" label="Kiro ACP" active={activeTab === 'kiroAcp'} onClick={() => setActiveTab('kiroAcp')} />
+            <TabButton icon="rule" label="Steering" active={activeTab === 'steering'} onClick={() => setActiveTab('steering')} />
+            <TabButton icon="extension" label="项目 Skills" active={activeTab === 'kiroSkills'} onClick={() => setActiveTab('kiroSkills')} />
             <TabButton icon="tune" label={t('settings.tab.general')} active={activeTab === 'general'} onClick={() => setActiveTab('general')} />
             <TabButton icon="terminal" label={t('settings.tab.terminal')} active={activeTab === 'terminal'} onClick={() => setActiveTab('terminal')} />
             <TabButton icon="dns" label={t('settings.tab.mcp')} active={activeTab === 'mcp'} onClick={() => setActiveTab('mcp')} />
@@ -170,6 +178,10 @@ export function Settings() {
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto px-8 py-6">
           {activeTab === 'providers' && <KiroConfig />}
+          {activeTab === 'workspace' && <WorkspaceSettings />}
+          {activeTab === 'kiroAcp' && <KiroAcpSettings />}
+          {activeTab === 'steering' && <SteeringSettings />}
+          {activeTab === 'kiroSkills' && <KiroSkillsSettings />}
           {activeTab === 'activity' && <ActivitySettings />}
           {activeTab === 'general' && <GeneralSettings />}
           {activeTab === 'h5Access' && <H5AccessSettings />}
