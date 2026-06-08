@@ -15,20 +15,24 @@
 
 ## 📦 安装
 
-### macOS
+> **目前 v0.2.0 推荐从源码自行构建**（见下方"从源码构建"段）。GitHub Releases 后续会附带预构建的 .dmg / .msi。
 
-1. **装 Kiro CLI**（如果还没装）：从 [AWS Kiro 官方页](https://kiro.dev) 下载 → 启动 → 登录 AWS Builder ID 拿 credits 配额。
-2. **装 Node.js**（≥ 18）：`brew install node` 或从 [nodejs.org](https://nodejs.org) 下载。
-3. **下载 kiro-haha**：去本仓库 [Releases](https://github.com/lyubaoze999-alt/kiro-haha/releases) 页下载 `kiro-haha_*.dmg`。
-4. **安装**：双击 `.dmg` → 把 Kiro Haha 拖进 Applications → 第一次启动**右键打开**绕过 Gatekeeper。
+### 前置依赖（Mac/Win 通用）
+
+1. **Kiro CLI**：从 [AWS Kiro 官方页](https://kiro.dev) 下载 → 启动 → 登录 AWS Builder ID 拿 credits 配额。
+2. **Node.js ≥ 18**：`brew install node`（Mac）或从 [nodejs.org](https://nodejs.org) 下 .msi（Win）。
+3. **bun**：`curl -fsSL https://bun.sh/install | bash`（前端 build 用）。
+4. **Rust toolchain**：`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`（Tauri 后端编译用）。
+
+### macOS（预构建 dmg，待发布）
+
+去本仓库 [Releases](https://github.com/lyubaoze999-alt/kiro-haha/releases) 页下载 `kiro-haha_*.dmg` → 双击 → 拖进 Applications → 第一次启动**右键→打开**绕过 Gatekeeper。
 
 > 适配器（`server.js`）已打包进 `.app` bundle 内，无需额外配置。app 启动时自动 spawn 监听 3789 端口。
 
-### Windows
+### Windows（预构建 msi，待发布）
 
-1. 装 Kiro CLI（同上）
-2. 装 Node.js（同上，从官网下 .msi）
-3. 下载 `kiro-haha_*.msi` 双击安装即可
+下载 `kiro-haha_*.msi` 双击安装。
 
 > Windows 构建由 GitHub Actions 自动产出，见 `.github/workflows/build-windows.yml`。
 
@@ -57,9 +61,13 @@ kiro-haha/
 └── frontend/       # cc-haha 前端的分支（已品牌化为 Kiro Haha）
 ```
 
-## 🔧 从源码构建
+## 🔧 从源码构建（推荐 v0.2.0 路径）
 
 ```bash
+# 0. clone
+git clone https://github.com/lyubaoze999-alt/kiro-haha.git
+cd kiro-haha
+
 # 1. 适配器依赖
 cd adapter && npm install
 
@@ -79,6 +87,24 @@ cp -R dist ../tauri-shell/cchaha-dist
 cd ../tauri-shell && npm install && npm run tauri build
 # 产物在 src-tauri/target/release/bundle/{macos,dmg,msi,nsis}/
 ```
+
+构建完毕：
+
+- **macOS**：`tauri-shell/src-tauri/target/release/bundle/dmg/kiro-haha_0.2.0_aarch64.dmg`
+- **Windows**：`tauri-shell/src-tauri/target/release/bundle/msi/kiro-haha_0.2.0_x64.msi` 或 `nsis/*.exe`
+
+## 🔁 Fork 后你需要改的（如果想做自己的更新链路）
+
+`tauri-shell/src-tauri/tauri.conf.json` 里有两段需要换成你自己的值：
+
+1. `plugins.updater.endpoints` —— 现在指向 `lyubaoze999-alt/kiro-haha` 的 Release。fork 后改成你自己仓库的 URL，否则别人用你的 app「检查更新」会拉到上游版本。
+2. `plugins.updater.pubkey` —— 当前是上游的 minisign 公钥。你想签自己的 update 包要重新生成 keypair：
+   ```bash
+   cd tauri-shell && npx tauri signer generate -w ~/.tauri/your-key.key
+   ```
+   把生成的 `.pub` 内容替换 `pubkey` 字段，私钥设为 GitHub Secret `TAURI_SIGNING_PRIVATE_KEY`，密码设为 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，workflow 自动签产物。
+
+如果不需要自动更新，这两个保持原样不影响 app 跑（更新检查会失败但不报错）。
 
 ## 🤝 贡献
 
