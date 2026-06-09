@@ -33,6 +33,25 @@ fn macos_notification_permission_state() -> String {
     "granted".to_string()
 }
 
+// ─── updater / app-mode lifecycle stubs ──────────────────────────────
+//
+// The cc-haha frontend invokes these three commands during the in-app
+// auto-update flow (close panels / persist state / sync runtimes).  The
+// upstream cc-haha Rust shell implements each with concrete cleanup; we
+// fork only the frontend, so without these stubs every install attempt
+// dies on `Command prepare_for_update_install not found` and the UI
+// never reaches `update.install()`.  Stubs are no-ops — kiro-haha has
+// no in-flight state we need to flush before relaunching.
+
+#[tauri::command]
+fn prepare_for_update_install() {}
+
+#[tauri::command]
+fn cancel_update_install() {}
+
+#[tauri::command]
+fn prepare_for_app_mode_restart() {}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -155,6 +174,9 @@ pub fn run() {
             detect_portable_dir,
             set_app_zoom,
             macos_notification_permission_state,
+            prepare_for_update_install,
+            cancel_update_install,
+            prepare_for_app_mode_restart,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,

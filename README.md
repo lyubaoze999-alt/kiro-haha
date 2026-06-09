@@ -15,26 +15,50 @@
 
 ## 📦 安装
 
-> **目前 v0.2.0 推荐从源码自行构建**（见下方"从源码构建"段）。GitHub Releases 后续会附带预构建的 .dmg / .msi。
+> **当前最新版：[v0.2.3](https://github.com/lyubaoze999-alt/kiro-haha/releases/latest)**（2026-06-09）。
+> 普通用户走预构建包；想改代码看下面"从源码构建"。
 
-### 前置依赖（Mac/Win 通用）
+### 前置依赖（必须，否则 app 内一片空）
 
-1. **Kiro CLI**：从 [AWS Kiro 官方页](https://kiro.dev) 下载 → 启动 → 登录 AWS Builder ID 拿 credits 配额。
+1. **Kiro CLI**：从 [AWS Kiro 官方页](https://kiro.dev) 下载 → 启动 → 登录 AWS Builder ID 拿 credits 配额。**装完先在终端跑一次 `kiro-cli login`** 完成认证，否则 quota 卡片是灰色的、聊天发不出。
 2. **Node.js ≥ 18**：`brew install node`（Mac）或从 [nodejs.org](https://nodejs.org) 下 .msi（Win）。
-3. **bun**：`curl -fsSL https://bun.sh/install | bash`（前端 build 用）。
-4. **Rust toolchain**：`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`（Tauri 后端编译用）。
 
-### macOS（预构建 dmg，待发布）
+> 仅当你想自己 build 才需要：bun (`curl -fsSL https://bun.sh/install | bash`) + Rust toolchain (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)。普通使用不需要这两个。
 
-去本仓库 [Releases](https://github.com/lyubaoze999-alt/kiro-haha/releases) 页下载 `kiro-haha_*.dmg` → 双击 → 拖进 Applications → 第一次启动**右键→打开**绕过 Gatekeeper。
+### macOS（Apple Silicon, M1/M2/M3）
 
-> 适配器（`server.js`）已打包进 `.app` bundle 内，无需额外配置。app 启动时自动 spawn 监听 3789 端口。
+去 [Releases](https://github.com/lyubaoze999-alt/kiro-haha/releases/latest) 下载 `kiro-haha_X.Y.Z_aarch64.dmg` → 双击 → 拖进 Applications → 第一次启动**右键→打开**绕过 Gatekeeper。
 
-### Windows（预构建 msi，待发布）
+> Intel Mac 暂时只能从源码构建（workflow 没配 x86_64 macOS target，下一轮补）。
 
-下载 `kiro-haha_*.msi` 双击安装。
+> 适配器（`server.js`）已打包进 `.app` bundle 内，无需额外配置。app 启动时自动 spawn 监听 3789 端口。第一次启动会有 FirstRunGuide modal 自检——4 项全 ✓ 才能用。
 
-> Windows 构建由 GitHub Actions 自动产出，见 `.github/workflows/build-windows.yml`。
+### Windows
+
+下载 `kiro-haha_X.Y.Z_x64-setup.exe`（推荐）或 `.msi` 双击安装。
+
+> Windows 自动更新当前**只检测但不会自动安装新版本**（latest.json 里 `platforms` 字段只列 darwin-aarch64）。Windows 用户需要手动到 Releases 页下载新版替换。这个会在下一轮修。
+
+### Linux
+
+暂未提供预构建包，从源码构建即可（见下面）。
+
+### 把 app 发给同事的话术
+
+```
+1. 装前置（一次性）：
+   - Kiro CLI: https://kiro.dev → 装完跑 `kiro-cli login`
+   - Node.js: https://nodejs.org （≥ 18）
+
+2. 装 app：
+   👉 https://github.com/lyubaoze999-alt/kiro-haha/releases/latest
+   - Mac (M1/M2/M3): 下 .dmg
+   - Windows: 下 .exe
+   - Mac Intel / Linux: 找我（暂时要源码 build）
+
+3. 第一次启动 macOS：右键 → 打开（绕过 Gatekeeper，一次就够）。
+   FirstRunGuide modal 会自检，按提示跑命令补齐缺失项。
+```
 
 ## 🚀 使用
 
