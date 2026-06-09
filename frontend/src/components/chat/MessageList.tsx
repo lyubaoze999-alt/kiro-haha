@@ -1527,6 +1527,23 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
     () => getCompletedTurnTargets(deferredMessages),
     [deferredMessages],
   )
+  // Map every user_text message id to its zero-based position among
+  // user_text messages. Needed so that a 'rewind' on a message that
+  // hasn't reached completedTurnTargets yet (e.g. the latest prompt
+  // while the assistant is still streaming) still truncates at the
+  // *correct* offset instead of falling back to userMessageIndex=0,
+  // which would wipe earlier history (#audit-06ec70d).
+  const userTextIndexById = useMemo(() => {
+    const map = new Map<string, number>()
+    let idx = 0
+    for (const m of deferredMessages) {
+      if (m.type === 'user_text' && !m.pending) {
+        map.set(m.id, idx)
+        idx += 1
+      }
+    }
+    return map
+  }, [deferredMessages])
   const latestCompletedTurnId =
     completedTurnTargets.length > 0
       ? completedTurnTargets[completedTurnTargets.length - 1]?.messageId ?? null
@@ -1823,12 +1840,16 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
                     const msg = item.message as Extract<UIMessage, { type: 'user_text' }>
                     const target = completedTurnTargets.find((c) => c.messageId === msg.id)
                     if (target) return () => { void handleRewindToTarget(target) }
-                    // No checkpoint — still truncate like Kiro IDE.  Build a
-                    // minimal target from the message itself so the pencil
-                    // button always truncates + prefills, never just copies.
+                    // No checkpoint — still truncate like Kiro IDE, but use the
+                    // real position of this user_text in the conversation so
+                    // the adapter cuts the .jsonl at the right offset. Falling
+                    // back to index=0 here would wipe every earlier turn
+                    // (regression introduced in 06ec70d).
+                    const realIndex = userTextIndexById.get(msg.id)
+                    if (realIndex == null) return undefined
                     const minimal: RewindTurnTarget = {
                       messageId: msg.id,
-                      userMessageIndex: 0,
+                      userMessageIndex: realIndex,
                       content: msg.content,
                       expectedContent: msg.content,
                       attachments: msg.attachments,
