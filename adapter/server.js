@@ -630,6 +630,48 @@ const server = http.createServer(async (req, res) => {
       if (req.method === "PUT") { const body = await readBody(req); return json(res, { hooks: setHooks(body.hooks || {}), triggers: HOOK_TRIGGERS }); }
       return json(res, { hooks: getHooks(), triggers: HOOK_TRIGGERS });
     }
+    if (r === "workspaces") {
+      // GET /api/workspaces  -> { workspaces, currentWorkspaceId }
+      // POST /api/workspaces { rootPath, name?, agentName? } -> { workspace }
+      // POST /api/workspaces/validate { rootPath } -> WorkspaceValidationResult
+      // POST /api/workspaces/switch { workspaceId } -> { workspace }
+      // PATCH /api/workspaces/:id { name?, agentName? } -> { workspace }
+      // DELETE /api/workspaces/:id -> { ok: true }
+      if (seg[2] === "validate" && req.method === "POST") {
+        const body = await readBody(req);
+        return json(res, validateWorkspace(body.rootPath));
+      }
+      if (seg[2] === "switch" && req.method === "POST") {
+        const body = await readBody(req);
+        const ws = switchWorkspace(body.workspaceId);
+        if (!ws) { res.statusCode = 404; return json(res, { error: { code: "WORKSPACE_NOT_FOUND", message: "workspace not found" } }); }
+        return json(res, { workspace: ws });
+      }
+      if (seg.length === 2 && req.method === "POST") {
+        const body = await readBody(req);
+        try {
+          const ws = createWorkspace(body.rootPath, body.name, body.agentName);
+          return json(res, { workspace: ws });
+        } catch (e) {
+          res.statusCode = 400;
+          return json(res, { error: { code: "WORKSPACE_INVALID", message: String(e?.message || e) } });
+        }
+      }
+      if (seg[2] && req.method === "PATCH") {
+        const body = await readBody(req);
+        const ws = updateWorkspace(decodeURIComponent(seg[2]), body);
+        if (!ws) { res.statusCode = 404; return json(res, { error: { code: "WORKSPACE_NOT_FOUND", message: "workspace not found" } }); }
+        return json(res, { workspace: ws });
+      }
+      if (seg[2] && req.method === "DELETE") {
+        deleteWorkspace(decodeURIComponent(seg[2]));
+        return json(res, { ok: true });
+      }
+      return json(res, {
+        workspaces: listWorkspaces(),
+        currentWorkspaceId: getCurrentWorkspaceId(),
+      });
+    }
     if (r === "memory") {
       if (seg[2] === "projects") return json(res, { projects: memoryProjects(url.searchParams.get("cwd")) });
       if (seg[2] === "files") return json(res, { files: memoryFiles(url.searchParams.get("projectId")) });
