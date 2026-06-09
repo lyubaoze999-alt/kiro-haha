@@ -1,33 +1,55 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useKiroAcpStore } from '../../stores/kiroAcpStore'
 import { useWorkspaceStore } from '../../stores/workspaceStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { projectSkillsApi } from '../../api/kiro'
-import { useState } from 'react'
+
+// Per-project skill names cache, shared across all RuntimeContextCard instances.
+// Keyed by projectRoot. TTL 30s — Skill changes don't happen mid-session typically.
+const skillNamesCache = new Map<string, { names: string[]; at: number }>()
+const SKILL_TTL_MS = 30_000
+const inFlightScans = new Map<string, Promise<string[]>>()
+
+async function getProjectSkillNames(projectRoot: string): Promise<string[]> {
+  const now = Date.now()
+  const hit = skillNamesCache.get(projectRoot)
+  if (hit && now - hit.at < SKILL_TTL_MS) return hit.names
+  const inFlight = inFlightScans.get(projectRoot)
+  if (inFlight) return inFlight
+  const p = (async () => {
+    try {
+      const res = await projectSkillsApi.scan(projectRoot)
+      const names = (res?.skills || []).map((s) => s.name)
+      skillNamesCache.set(projectRoot, { names, at: Date.now() })
+      return names
+    } finally {
+      inFlightScans.delete(projectRoot)
+    }
+  })()
+  inFlightScans.set(projectRoot, p)
+  return p
+}
 
 /**
  * 右侧面板顶部：只读运行上下文卡片
- * - ACP Connected
- * - 当前 session/new cwd
- * - 默认 Agent
- * - 可见 Skills 数 / steering 数
- * - 当前项目可见 Skills 列表（前 N 个）
- * - "去 Settings 管理"入口
  *
- * 严格只读：不在此面板做任何配置编辑。
+ * Performance note: do NOT call fetchConfig / fetchAll here. Each opened
+ * session mounts its own RuntimeContextCard; if every card fires its own
+ * HTTP fetches we issue O(N_sessions) duplicate requests on tab switch.
+ * Instead we read whatever is already in the stores (Sidebar card and
+ * Settings page bootstrap them once) and only do a per-projectRoot
+ * project-skills scan with module-level cache + in-flight de-dup.
  */
 export function RuntimeContextCard({ sessionId }: { sessionId: string }) {
   const acpStatus = useKiroAcpStore((s) => s.acpStatus)
   const acpCwd = useKiroAcpStore((s) => s.acpCwd)
   const acpSessionId = useKiroAcpStore((s) => s.acpSessionId)
   const config = useKiroAcpStore((s) => s.config)
-  const fetchConfig = useKiroAcpStore((s) => s.fetchConfig)
 
   const currentWs = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === s.currentWorkspaceId) || null)
   const validation = useWorkspaceStore((s) => s.validation)
-  const fetchAll = useWorkspaceStore((s) => s.fetchAll)
 
   const setPendingSettingsTab = useUIStore((s) => s.setPendingSettingsTab)
   const openTab = useTabStore((s) => s.openTab)
@@ -39,15 +61,11 @@ export function RuntimeContextCard({ sessionId }: { sessionId: string }) {
 
   const projectRoot = currentSession?.workDir || currentWs?.rootPath || null
 
-  useEffect(() => { void fetchConfig() }, [fetchConfig])
-  useEffect(() => { void fetchAll() }, [fetchAll])
-
   useEffect(() => {
-    if (!projectRoot) return
+    if (!projectRoot) { setSkillNames([]); return }
     let cancelled = false
-    projectSkillsApi.scan(projectRoot).then((res) => {
-      if (cancelled) return
-      setSkillNames(res.skills.map((s) => s.name))
+    getProjectSkillNames(projectRoot).then((names) => {
+      if (!cancelled) setSkillNames(names)
     }).catch(() => { if (!cancelled) setSkillNames([]) })
     return () => { cancelled = true }
   }, [projectRoot])

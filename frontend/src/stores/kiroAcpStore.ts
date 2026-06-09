@@ -2,6 +2,10 @@ import { create } from 'zustand'
 import { kiroConfigApi, type KiroConfigPayload } from '../api/kiro'
 import type { ChatMode } from '../types/kiro'
 
+let inFlightConfigFetch: Promise<void> | null = null
+let lastConfigFetchAt = 0
+const CONFIG_TTL_MS = 5000
+
 const CHAT_MODE_KEY = 'kiro-haha-chat-mode'
 
 function loadChatMode(): ChatMode {
@@ -73,13 +77,22 @@ export const useKiroAcpStore = create<KiroAcpStore>((set) => ({
   chatMode: loadChatMode(),
 
   fetchConfig: async () => {
+    const now = Date.now()
+    if (inFlightConfigFetch) return inFlightConfigFetch
+    if (now - lastConfigFetchAt < CONFIG_TTL_MS) return
     set({ isConfigLoading: true, configError: null })
-    try {
-      const config = await kiroConfigApi.get()
-      set({ config, isConfigLoading: false })
-    } catch (err) {
-      set({ isConfigLoading: false, configError: err instanceof Error ? err.message : 'failed to load kiro config' })
-    }
+    inFlightConfigFetch = (async () => {
+      try {
+        const config = await kiroConfigApi.get()
+        set({ config, isConfigLoading: false })
+        lastConfigFetchAt = Date.now()
+      } catch (err) {
+        set({ isConfigLoading: false, configError: err instanceof Error ? err.message : 'failed to load kiro config' })
+      } finally {
+        inFlightConfigFetch = null
+      }
+    })()
+    return inFlightConfigFetch
   },
 
   updateConfig: async (patch) => {
