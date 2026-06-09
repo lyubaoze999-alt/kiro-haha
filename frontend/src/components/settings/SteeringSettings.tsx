@@ -42,9 +42,10 @@ export function SteeringSettings() {
     setError(null)
     try {
       const { files } = await steeringApi.scan(projectRoot)
-      setFiles(files)
+      setFiles(Array.isArray(files) ? files : [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to scan steering')
+      setFiles([])
     } finally {
       setLoading(false)
     }
@@ -195,7 +196,7 @@ export function SteeringSettings() {
                 {f.description && (
                   <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>{f.description}</p>
                 )}
-                {f.warnings.length > 0 && (
+                {Array.isArray(f.warnings) && f.warnings.length > 0 && (
                   <ul style={{ margin: '4px 0 0 0', paddingLeft: 16, color: 'var(--color-warning, #b8860b)', fontSize: 12 }}>
                     {f.warnings.map((w, i) => <li key={i}>{w}</li>)}
                   </ul>
