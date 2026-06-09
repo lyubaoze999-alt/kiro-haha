@@ -1,5 +1,31 @@
 # kiro-haha 项目进度
 
+## 📌 v0.2.3 已发布 (2026-06-09)
+
+GitHub Release：https://github.com/lyubaoze999-alt/kiro-haha/releases/tag/v0.2.3
+6 个 assets 齐全（dmg / msi / exe / .app.tar.gz / .sig / latest.json），自动更新链路通。
+
+### 本轮修了 v0.2.2 的 3 个 critical regression
+| 修复 commit | 问题 | 严重度 |
+|---|---|---|
+| `2dfea4d` | rewind userMessageIndex 写死 0 → 清空整个 .jsonl 历史 | 数据丢失 |
+| `abb1e45` | Sidebar useTabStore selector new Set 每次新引用 → infinite render loop → app 卡死 | app 不可用 |
+| `f9f5612` | adapter 漏接 `/api/workspaces` 路由 → 前端 destructure undefined → `.find` 崩 | app 不可用 |
+
+合并 PR/branch：`fix/rewind-data-loss` → main `9387cfd`，bump `74c5a91`，tag `v0.2.3` = `b0341dd`。
+
+### 发版踩的坑（已写进 skill: kiro-haha-release）
+1. **`TAURI_SIGNING_PRIVATE_KEY` secret 必须用 `gh secret set` 设**，浏览器手动粘贴会引入换行/多余字符 → workflow 报 `Invalid symbol 61`，v0.2.1 / v0.2.2 / v0.2.3 第一次发都因此失败。修复方法：`gh secret set TAURI_SIGNING_PRIVATE_KEY --body "$(cat ~/.tauri/kiro-haha.key | tr -d '\n')"`。
+2. **bump version 在 `tauri-shell/src-tauri`，不是 `frontend/src-tauri`**——后者是 0.3.2 另一个无关版本号。
+3. 重跑失败的 workflow：删 release + 删 tag + 重推 tag，或者 GitHub UI 点 "Re-run failed jobs"。
+4. **SSH 密钥不能调 GitHub Actions API**——只能跑 git push/pull。看 workflow log / 改 secrets 必须 HTTPS API + token。
+
+### 项目知识库 + Skill 已落地
+- `knowledge` 索引 3 个 context：`kiro-haha-project`（repo）/ `kiro-haha-adapter-local`（~/kiro-adapter）/ `kiro-haha-progress`（本文件）
+- Skill: `~/.agent-shared/skills/kiro-haha-release/SKILL.md`，下次发布直接 trigger
+
+---
+
 ## 📌 最新进度 (2026-06-08, **Sidebar Credits Card v3**)
 
 ### Credits 入口升级（按 v3 设计稿落地）
