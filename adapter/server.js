@@ -706,6 +706,62 @@ const server = http.createServer(async (req, res) => {
       const search = url.searchParams.get("search") || "";
       return json(res, browseDir(dir, includeFiles, search));
     }
+    if (r === "kiro-config") {
+      if (req.method === "PATCH") {
+        const body = await readBody(req);
+        return json(res, updateKiroConfig(body));
+      }
+      return json(res, getKiroConfig());
+    }
+    if (r === "steering") {
+      const projectRoot = url.searchParams.get("projectRoot") || "";
+      if (seg.length === 2 && req.method === "GET") return json(res, { files: scanProjectSteering(projectRoot) });
+      if (seg.length === 2 && req.method === "POST") {
+        const body = await readBody(req);
+        return json(res, { file: createSteeringFile(body.projectRoot || projectRoot, body.fileName, body.content || "") });
+      }
+      if (seg[2] === "open" && req.method === "POST") {
+        const body = await readBody(req);
+        return json(res, openSteeringFolder(body.projectRoot || projectRoot));
+      }
+      if (seg[2] === "file") {
+        const rel = url.searchParams.get("relativePath") || "";
+        if (req.method === "GET") return json(res, { content: readSteeringFile(projectRoot, rel) });
+        if (req.method === "PUT") {
+          const body = await readBody(req);
+          return json(res, { file: updateSteeringFile(body.projectRoot || projectRoot, body.relativePath || rel, body.content || "") });
+        }
+        if (req.method === "DELETE") {
+          deleteSteeringFile(projectRoot, rel);
+          return json(res, { ok: true });
+        }
+      }
+      return json(res, { files: scanProjectSteering(projectRoot) });
+    }
+    if (r === "global-skills") {
+      const root = url.searchParams.get("root") || getKiroConfig().globalSkillRoot;
+      if (seg[2] === "install" && req.method === "POST") {
+        const body = await readBody(req);
+        try {
+          await installGlobalSkillToProject(body.globalSkillId, body.projectRoot, !!body.overwrite);
+          return json(res, { ok: true });
+        } catch (e) { res.statusCode = 500; return json(res, { error: { code: "INSTALL_FAILED", message: String(e?.message || e) } }); }
+      }
+      if (seg[2] === "sync" && req.method === "POST") {
+        const body = await readBody(req);
+        try {
+          await syncGlobalSkillToProject(body.globalSkillId, body.projectRoot, !!body.overwrite);
+          return json(res, { ok: true });
+        } catch (e) { res.statusCode = 500; return json(res, { error: { code: "SYNC_FAILED", message: String(e?.message || e) } }); }
+      }
+      const skills = await scanGlobalSkills(root);
+      return json(res, { skills, root });
+    }
+    if (r === "project-skills") {
+      const projectRoot = url.searchParams.get("projectRoot") || "";
+      const skills = await scanProjectSkills(projectRoot);
+      return json(res, { skills });
+    }
     // generic empty ok for the rest
     return json(res, { ok: true });
   } catch (e) {
@@ -1148,10 +1204,21 @@ function updateKiroConfig(patch) {
 // ---------- Kiro ACP Client: SkillService ----------
 import crypto from "node:crypto";
 
+// Cache hashes by absolute SKILL.md path. Key is the path; value is
+// { mtimeMs, hash }. If mtime is unchanged we reuse the previous hash and
+// skip readFileSync + sha256 entirely (the dominant cost when scanning
+// 50+ skills on every project-skills tick).
+const skillHashCache = new Map();
+
 function computeSkillHash(skillMdPath) {
   try {
+    const stat = fs.statSync(skillMdPath);
+    const cached = skillHashCache.get(skillMdPath);
+    if (cached && cached.mtimeMs === stat.mtimeMs) return cached.hash;
     const c = fs.readFileSync(skillMdPath, "utf8");
-    return crypto.createHash("sha256").update(c).digest("hex").slice(0, 16);
+    const hash = crypto.createHash("sha256").update(c).digest("hex").slice(0, 16);
+    skillHashCache.set(skillMdPath, { mtimeMs: stat.mtimeMs, hash });
+    return hash;
   } catch { return ""; }
 }
 
@@ -1182,7 +1249,36 @@ function checkSkillHealth(skill) {
   return { ...skill, status: warnings.length > 0 ? "warning" : "ok", warnings };
 }
 
+// Async variant: avoids blocking the WS event loop while we walk skill dirs.
+// Hash is still sync but cached by mtime, so steady-state cost is just a stat.
+async function buildSkillMetaAsync(skillDir, source) {
+  const skillMdPath = path.join(skillDir, "SKILL.md");
+  try {
+    const stat = await fs.promises.stat(skillMdPath);
+    if (!stat.isFile()) return null;
+  } catch { return null; }
+  const content = await fs.promises.readFile(skillMdPath, "utf8");
+  const fm = parseSkillFrontmatter(content);
+  const dirName = path.basename(skillDir);
+  // computeSkillHash uses mtime cache; cold path will hit fs.readFileSync once,
+  // warm path is just statSync.
+  const meta = {
+    id: `${source}:${dirName}`,
+    name: fm.name || dirName,
+    path: skillDir,
+    skillMdPath,
+    inclusionMode: fm.inclusionMode || "unknown",
+    description: fm.description || "",
+    version: fm.version || undefined,
+    hash: computeSkillHash(skillMdPath),
+    status: "ok",
+    warnings: [],
+  };
+  return checkSkillHealth(meta);
+}
+
 function buildSkillMeta(skillDir, source) {
+  // Kept for any sync callers (install/sync flows).
   const skillMdPath = path.join(skillDir, "SKILL.md");
   if (!fs.existsSync(skillMdPath)) return null;
   const content = fs.readFileSync(skillMdPath, "utf8");
@@ -1203,21 +1299,22 @@ function buildSkillMeta(skillDir, source) {
   return checkSkillHealth(meta);
 }
 
-function scanGlobalSkills(globalSkillRoot) {
+async function scanGlobalSkills(globalSkillRoot) {
   const root = globalSkillRoot || getKiroConfig().globalSkillRoot;
   const out = [];
   try {
-    if (!fs.existsSync(root)) return out;
-    for (const d of fs.readdirSync(root)) {
-      const skillDir = path.join(root, d);
-      if (!fs.statSync(skillDir).isDirectory()) continue;
-      const meta = buildSkillMeta(skillDir, "global");
-      if (meta) {
-        let updatedAt = 0;
-        try { updatedAt = fs.statSync(meta.skillMdPath).mtimeMs; } catch {}
-        out.push({ ...meta, rootPath: root, updatedAt });
-      }
-    }
+    let entries;
+    try { entries = await fs.promises.readdir(root, { withFileTypes: true }); } catch { return out; }
+    // Build all metas in parallel — the bottleneck is fs IO, not CPU.
+    const metas = await Promise.all(entries.filter((e) => e.isDirectory()).map(async (e) => {
+      const skillDir = path.join(root, e.name);
+      const meta = await buildSkillMetaAsync(skillDir, "global");
+      if (!meta) return null;
+      let updatedAt = 0;
+      try { updatedAt = (await fs.promises.stat(meta.skillMdPath)).mtimeMs; } catch {}
+      return { ...meta, rootPath: root, updatedAt };
+    }));
+    for (const m of metas) if (m) out.push(m);
   } catch {}
   return out;
 }
@@ -1238,31 +1335,37 @@ function getSyncStatus(globalHash, projectHash, syncMeta) {
   return "synced";
 }
 
-function scanProjectSkills(projectRoot) {
+async function scanProjectSkills(projectRoot) {
   const out = [];
   if (!projectRoot) return out;
   const skillsRoot = path.join(projectRoot, ".kiro/skills");
-  if (!fs.existsSync(skillsRoot)) return out;
-  const globalIndex = new Map(scanGlobalSkills().map((s) => [s.name, s]));
-  try {
-    for (const d of fs.readdirSync(skillsRoot)) {
-      const skillDir = path.join(skillsRoot, d);
-      if (!fs.statSync(skillDir).isDirectory()) continue;
-      const meta = buildSkillMeta(skillDir, "project");
-      if (!meta) continue;
-      const syncMeta = readSyncMeta(skillDir);
-      const sourceSkill = syncMeta ? globalIndex.get(syncMeta.globalSkillId) : globalIndex.get(meta.name);
-      const syncStatus = getSyncStatus(sourceSkill?.hash, meta.hash, syncMeta);
-      out.push({
-        ...meta, projectRoot,
-        source: syncMeta ? "global" : "project",
-        sourceSkillId: syncMeta?.globalSkillId,
-        installedAt: syncMeta?.syncedAt,
-        lastSyncedAt: syncMeta?.syncedAt,
-        syncStatus,
-      });
-    }
-  } catch {}
+  let entries;
+  try { entries = await fs.promises.readdir(skillsRoot, { withFileTypes: true }); } catch { return out; }
+  // Run global scan + project entry walk in parallel.
+  const [globalSkills, perEntryMetas] = await Promise.all([
+    scanGlobalSkills(),
+    Promise.all(entries.filter((e) => e.isDirectory()).map(async (e) => {
+      const skillDir = path.join(skillsRoot, e.name);
+      const meta = await buildSkillMetaAsync(skillDir, "project");
+      if (!meta) return null;
+      return { meta, syncMeta: readSyncMeta(skillDir), skillDir };
+    })),
+  ]);
+  const globalIndex = new Map(globalSkills.map((s) => [s.name, s]));
+  for (const item of perEntryMetas) {
+    if (!item) continue;
+    const { meta, syncMeta } = item;
+    const sourceSkill = syncMeta ? globalIndex.get(syncMeta.globalSkillId) : globalIndex.get(meta.name);
+    const syncStatus = getSyncStatus(sourceSkill?.hash, meta.hash, syncMeta);
+    out.push({
+      ...meta, projectRoot,
+      source: syncMeta ? "global" : "project",
+      sourceSkillId: syncMeta?.globalSkillId,
+      installedAt: syncMeta?.syncedAt,
+      lastSyncedAt: syncMeta?.syncedAt,
+      syncStatus,
+    });
+  }
   return out;
 }
 
@@ -1275,9 +1378,9 @@ function copyDirRecursive(src, dst) {
   }
 }
 
-function installGlobalSkillToProject(globalSkillId, projectRoot, overwrite) {
+async function installGlobalSkillToProject(globalSkillId, projectRoot, overwrite) {
   if (!projectRoot) throw new Error("projectRoot is required");
-  const all = scanGlobalSkills();
+  const all = await scanGlobalSkills();
   const skill = all.find((s) => s.id === globalSkillId || s.name === globalSkillId);
   if (!skill) throw new Error(`global skill not found: ${globalSkillId}`);
   const dst = path.join(projectRoot, ".kiro/skills", path.basename(skill.path));
@@ -1294,7 +1397,7 @@ function installGlobalSkillToProject(globalSkillId, projectRoot, overwrite) {
   fs.writeFileSync(path.join(dst, ".cc-haha-sync.json"), JSON.stringify(meta, null, 2));
 }
 
-function syncGlobalSkillToProject(globalSkillId, projectRoot, overwrite) {
+async function syncGlobalSkillToProject(globalSkillId, projectRoot, overwrite) {
   // 重新覆盖：把全局最新版本同步到项目
   return installGlobalSkillToProject(globalSkillId, projectRoot, overwrite === undefined ? true : overwrite);
 }

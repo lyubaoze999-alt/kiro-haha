@@ -2,6 +2,13 @@ import { create } from 'zustand'
 import { workspacesApi } from '../api/kiro'
 import type { Workspace, WorkspaceValidationResult } from '../types/kiro'
 
+// In-flight de-dup so multiple mounted components (Sidebar card,
+// RuntimeContextCard per session, Settings page) share one HTTP request.
+let inFlightFetchAll: Promise<void> | null = null
+let inFlightValidate: Promise<void> | null = null
+let lastFetchAllAt = 0
+const FETCH_ALL_TTL_MS = 3000
+
 type WorkspaceStore = {
   workspaces: Workspace[]
   currentWorkspaceId: string | null
@@ -30,20 +37,29 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   error: null,
 
   fetchAll: async () => {
-    set({ isLoading: true, error: null })
-    try {
-      const resp = await workspacesApi.list()
-      // Defensive defaults: an older / partial adapter might return
-      // { ok: true } without the expected fields, leaving destructured
-      // values undefined and crashing every consumer that does
-      // workspaces.find(...).
-      const workspaces = Array.isArray(resp?.workspaces) ? resp.workspaces : []
-      const currentWorkspaceId = resp?.currentWorkspaceId ?? null
-      set({ workspaces, currentWorkspaceId, isLoading: false })
-      await get().refreshValidationForCurrent()
-    } catch (err) {
-      set({ workspaces: [], currentWorkspaceId: null, isLoading: false, error: err instanceof Error ? err.message : 'failed to load workspaces' })
+    // Multiple components (Sidebar, RuntimeContextCard×N, Settings) all call
+    // this in their useEffect. Without de-dup we issue N+1 GETs every mount.
+    const now = Date.now()
+    if (inFlightFetchAll) return inFlightFetchAll
+    if (now - lastFetchAllAt < FETCH_ALL_TTL_MS && get().workspaces.length > 0) {
+      return // recent fetch is still fresh
     }
+    set({ isLoading: true, error: null })
+    inFlightFetchAll = (async () => {
+      try {
+        const resp = await workspacesApi.list()
+        const workspaces = Array.isArray(resp?.workspaces) ? resp.workspaces : []
+        const currentWorkspaceId = resp?.currentWorkspaceId ?? null
+        set({ workspaces, currentWorkspaceId, isLoading: false })
+        lastFetchAllAt = Date.now()
+        await get().refreshValidationForCurrent()
+      } catch (err) {
+        set({ workspaces: [], currentWorkspaceId: null, isLoading: false, error: err instanceof Error ? err.message : 'failed to load workspaces' })
+      } finally {
+        inFlightFetchAll = null
+      }
+    })()
+    return inFlightFetchAll
   },
 
   createWorkspace: async (rootPath, name, agentName) => {
@@ -97,12 +113,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       set({ validation: null })
       return
     }
-    try {
-      const result = await workspacesApi.validate(ws.rootPath)
-      set({ validation: result })
-    } catch {
-      set({ validation: null })
-    }
+    if (inFlightValidate) return inFlightValidate
+    inFlightValidate = (async () => {
+      try {
+        const result = await workspacesApi.validate(ws.rootPath)
+        set({ validation: result })
+      } catch {
+        set({ validation: null })
+      } finally {
+        inFlightValidate = null
+      }
+    })()
+    return inFlightValidate
   },
 
   getCurrentWorkspace: () => {
