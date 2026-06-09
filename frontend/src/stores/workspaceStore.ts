@@ -32,11 +32,17 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   fetchAll: async () => {
     set({ isLoading: true, error: null })
     try {
-      const { workspaces, currentWorkspaceId } = await workspacesApi.list()
+      const resp = await workspacesApi.list()
+      // Defensive defaults: an older / partial adapter might return
+      // { ok: true } without the expected fields, leaving destructured
+      // values undefined and crashing every consumer that does
+      // workspaces.find(...).
+      const workspaces = Array.isArray(resp?.workspaces) ? resp.workspaces : []
+      const currentWorkspaceId = resp?.currentWorkspaceId ?? null
       set({ workspaces, currentWorkspaceId, isLoading: false })
       await get().refreshValidationForCurrent()
     } catch (err) {
-      set({ isLoading: false, error: err instanceof Error ? err.message : 'failed to load workspaces' })
+      set({ workspaces: [], currentWorkspaceId: null, isLoading: false, error: err instanceof Error ? err.message : 'failed to load workspaces' })
     }
   },
 

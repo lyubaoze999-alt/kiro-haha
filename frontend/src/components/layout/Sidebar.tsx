@@ -115,9 +115,15 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   }, [contextMenu, projectContextMenu, projectHeaderMenu, projectHeaderSubmenu])
 
   const currentWorkspace = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === s.currentWorkspaceId) || null)
-  // Tab 中打开的 sessionId 集合——用于确保已打开的会话不被 workspace 过滤隐藏
-  const tabSessionIds = useTabStore((s) =>
-    new Set(s.tabs.filter((t) => t.type === 'session').map((t) => t.sessionId)),
+  // Tab 中打开的 sessionId 集合——用于确保已打开的会话不被 workspace 过滤隐藏。
+  // Must be derived via useMemo from the already-stable `tabs` array (line 71)
+  // instead of constructing a new Set inside a useTabStore selector — the
+  // latter returns a fresh reference on every selector invocation, fails
+  // zustand's Object.is comparison, re-triggers render, and locks the app
+  // in 'Maximum update depth exceeded' (regression introduced in f097037).
+  const tabSessionIds = useMemo(
+    () => new Set(tabs.filter((t) => t.type === 'session').map((t) => t.sessionId)),
+    [tabs],
   )
   const filteredSessions = useMemo(() => {
     let result = sessions
