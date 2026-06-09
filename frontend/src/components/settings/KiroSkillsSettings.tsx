@@ -43,10 +43,13 @@ export function KiroSkillsSettings() {
     setError(null)
     try {
       const res = await globalSkillsApi.scan()
-      setGlobalSkills(res.skills)
-      setGlobalRoot(res.root)
+      // 防御：如果 adapter server 跑旧版本（没有 /api/global-skills 路由），
+      // 通用 fallback 会返回 { ok: true }，res.skills 为 undefined。
+      setGlobalSkills(Array.isArray(res?.skills) ? res.skills : [])
+      setGlobalRoot(typeof res?.root === 'string' ? res.root : '')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to scan global skills')
+      setGlobalSkills([])
     } finally {
       setLoading(false)
     }
@@ -59,9 +62,10 @@ export function KiroSkillsSettings() {
     }
     try {
       const res = await projectSkillsApi.scan(projectRoot)
-      setProjectSkills(res.skills)
+      setProjectSkills(Array.isArray(res?.skills) ? res.skills : [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to scan project skills')
+      setProjectSkills([])
     }
   }, [projectRoot])
 
@@ -170,8 +174,8 @@ export function KiroSkillsSettings() {
                 status={s.status}
                 warnings={s.warnings}
                 extra={
-                  <span style={{ fontSize: 11, color: SYNC_COLOR[s.syncStatus] }}>
-                    {SYNC_LABEL[s.syncStatus]}
+                  <span style={{ fontSize: 11, color: SYNC_COLOR[s.syncStatus] ?? 'var(--color-text-muted)' }}>
+                    {SYNC_LABEL[s.syncStatus] ?? s.syncStatus ?? '未知'}
                   </span>
                 }
                 actions={
@@ -194,13 +198,16 @@ function SkillRow({
   name, description, inclusionMode, status, warnings, extra, actions,
 }: {
   name: string
-  description: string
-  inclusionMode: string
-  status: string
-  warnings: string[]
+  description?: string
+  inclusionMode?: string
+  status?: string
+  warnings?: string[]
   extra?: React.ReactNode
   actions?: React.ReactNode
 }) {
+  const safeWarnings = Array.isArray(warnings) ? warnings : []
+  const safeStatus = status ?? 'ok'
+  const safeMode = inclusionMode ?? 'unknown'
   return (
     <div style={{ border: '1px solid var(--color-border)', borderRadius: 6, padding: 10 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
@@ -209,26 +216,26 @@ function SkillRow({
           <span style={{
             fontSize: 11, padding: '1px 6px', borderRadius: 4,
             background: 'var(--color-surface-active, var(--color-surface))', color: 'var(--color-text-muted)',
-          }}>{inclusionMode}</span>
+          }}>{safeMode}</span>
           <span style={{
             fontSize: 11, padding: '1px 6px', borderRadius: 4,
             background:
-              status === 'ok' ? 'var(--color-success-bg, #e8f5e9)'
-              : status === 'warning' ? 'var(--color-warning-bg, #fff3e0)'
+              safeStatus === 'ok' ? 'var(--color-success-bg, #e8f5e9)'
+              : safeStatus === 'warning' ? 'var(--color-warning-bg, #fff3e0)'
               : 'var(--color-danger-bg, #ffebee)',
             color:
-              status === 'ok' ? 'var(--color-success, #2e7d32)'
-              : status === 'warning' ? 'var(--color-warning, #b8860b)'
+              safeStatus === 'ok' ? 'var(--color-success, #2e7d32)'
+              : safeStatus === 'warning' ? 'var(--color-warning, #b8860b)'
               : 'var(--color-danger)',
-          }}>{status}</span>
+          }}>{safeStatus}</span>
           {extra}
         </div>
         {actions && <div style={{ display: 'flex', gap: 4 }}>{actions}</div>}
       </div>
       {description && <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>{description}</p>}
-      {warnings.length > 0 && (
+      {safeWarnings.length > 0 && (
         <ul style={{ margin: '4px 0 0 0', paddingLeft: 16, color: 'var(--color-warning, #b8860b)', fontSize: 12 }}>
-          {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          {safeWarnings.map((w, i) => <li key={i}>{w}</li>)}
         </ul>
       )}
     </div>
