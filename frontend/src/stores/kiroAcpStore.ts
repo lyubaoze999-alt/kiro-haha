@@ -17,15 +17,25 @@ function saveChatMode(mode: ChatMode) {
 }
 
 /** Wrap user input according to selected chat mode.
- *  Note: never inline SKILL.md or steering full text — that's Kiro Agent's job
- *  based on cwd. We only emit short hints. */
+ *
+ *  IMPORTANT — why default mode does NOT wrap:
+ *  Kiro Agent reads `.kiro/steering` and `.kiro/skills` automatically based on
+ *  the ACP cwd, so prepending "本次任务运行在当前 Kiro 项目上下文中..." to every
+ *  user message is redundant. Worse, Kiro uses the first ~80 chars of the user
+ *  message as the session title, so wrapping pollutes every session title and
+ *  makes the sidebar look like duplicate "本次任务运行在当..." entries.
+ *
+ *  We only wrap in debug mode, which the user explicitly opts into and
+ *  expects diagnostic output (it's a one-off probe, not the normal flow).
+ *
+ *  Never inline SKILL.md or steering full text — that's Kiro Agent's job
+ *  based on cwd. */
 export function wrapPrompt(userInput: string, mode: ChatMode): string {
-  if (mode === 'auto_project_skills') {
-    return `本次任务运行在当前 Kiro 项目上下文中。请优先遵循 \`.kiro/steering/\`，并根据任务语义自动使用 \`.kiro/skills/\` 中匹配的 Skill。\n\n用户任务：\n${userInput}`
-  }
   if (mode === 'debug_check_skills') {
-    return `本次任务运行在当前 Kiro 项目上下文中。\n\n请先输出以下诊断信息：\n[VisibleSkills: 列出当前可见 Skill 名称]\n[MatchedSkill: 如果有匹配 Skill，输出 Skill 名称；没有则输出 none]\n[Reason: 简述匹配原因]\n\n然后再完成用户任务。\n\n用户任务：\n${userInput}`
+    return `请先输出以下诊断信息：\n[VisibleSkills: 列出当前可见 Skill 名称]\n[MatchedSkill: 如果有匹配 Skill，输出 Skill 名称；没有则输出 none]\n[Reason: 简述匹配原因]\n\n然后再完成用户任务。\n\n用户任务：\n${userInput}`
   }
+  // auto_project_skills 与 plain 都不包装：Kiro Agent 已通过 cwd 自动加载
+  // .kiro/steering 和 .kiro/skills，前端无需再注入提示。
   return userInput
 }
 
