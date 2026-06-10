@@ -386,7 +386,18 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
       }))
 
       prepareInstallAttempted = true
-      await invoke('prepare_for_update_install')
+      try {
+        await invoke('prepare_for_update_install')
+      } catch (prepError) {
+        // Older builds (pre-89636d9) don't register this command. The
+        // pre-install hook is a best-effort cleanup (kill sidecars, flush
+        // state); install can still proceed without it. Swallow only
+        // the "command not found" case so genuine prepare failures still
+        // surface.
+        const msg = prepError instanceof Error ? prepError.message : String(prepError)
+        if (!/not\s*found|unknown command/i.test(msg)) throw prepError
+        console.warn('[updater] prepare_for_update_install missing; proceeding without prep:', msg)
+      }
       await update.install()
 
       set((state) => ({
