@@ -55,6 +55,7 @@ type ChatInputProps = {
 }
 
 const EMPTY_WORKSPACE_REFERENCES: WorkspaceChatReference[] = []
+const EMPTY_SLASH_COMMANDS: Array<{ name: string; description: string; argumentHint?: string }> = []
 
 function workspaceReferenceToAttachment(reference: WorkspaceChatReference): Attachment {
   return {
@@ -125,13 +126,29 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       return next
     })
   }, [])
-  const { sendMessage, stopGeneration, clearComposerInsertion } = useChatStore()
+  const { sendMessage, stopGeneration, clearComposerInsertion } = useChatStore.getState()
+  // ↑ Pull actions via getState(): action references are stable across the
+  // store's lifetime, so we don't need to subscribe. The previous form
+  // `const { ... } = useChatStore()` subscribed to the *entire* chat store
+  // state, meaning every 50ms throttled streaming delta on any session
+  // re-rendered this 1200+ line composer — directly causing the
+  // "long-session feels laggy" symptom (the longer the messages array,
+  // the more useMemo/useCallback recompute on each forced re-render).
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
-  const chatState = sessionState?.chatState ?? 'idle'
-  const slashCommands = sessionState?.slashCommands ?? []
-  const composerPrefill = sessionState?.composerPrefill ?? null
-  const composerInsertion = sessionState?.composerInsertion ?? null
+  // Subscribe to leaf scalars/arrays instead of the whole sessionState object.
+  // Why: sessions[activeTabId] gets a fresh reference on every store.set
+  // (spread builds a new object). The streaming hot path emits a set every
+  // 50ms during a reply — if ChatInput subscribes to the whole sessionState
+  // object it re-renders 20 times/second with all its useMemo/useCallback
+  // and 1000+ child components recomputing. By selecting only the leaf
+  // values we actually use, zustand's default strict-equality compare keeps
+  // shallow refs stable when nothing relevant changed and skips the
+  // re-render entirely.
+  const chatState = useChatStore((s) => (activeTabId ? s.sessions[activeTabId]?.chatState : undefined) ?? 'idle')
+  const slashCommands = useChatStore((s) => (activeTabId ? s.sessions[activeTabId]?.slashCommands : undefined) ?? EMPTY_SLASH_COMMANDS)
+  const composerPrefill = useChatStore((s) => (activeTabId ? s.sessions[activeTabId]?.composerPrefill : undefined) ?? null)
+  const composerInsertion = useChatStore((s) => (activeTabId ? s.sessions[activeTabId]?.composerInsertion : undefined) ?? null)
+  const loadedMessageCount = useChatStore((s) => (activeTabId ? s.sessions[activeTabId]?.messages?.length : undefined) ?? 0)
   const runtimeSelection = useSessionRuntimeStore((state) =>
     activeTabId ? state.selections[activeTabId] : undefined,
   )
@@ -142,7 +159,6 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     : undefined
   const runtimeModelLabel = runtimeSelection?.modelId ?? currentModel?.name ?? currentModel?.id
   const activeSession = useSessionStore((state) => activeTabId ? state.sessions.find((session) => session.id === activeTabId) ?? null : null)
-  const loadedMessageCount = sessionState?.messages?.length ?? 0
   const messageCount = Math.max(loadedMessageCount, activeSession?.messageCount ?? 0)
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)

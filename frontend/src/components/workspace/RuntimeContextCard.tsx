@@ -54,8 +54,16 @@ export function RuntimeContextCard({ sessionId }: { sessionId: string }) {
   const setPendingSettingsTab = useUIStore((s) => s.setPendingSettingsTab)
   const openTab = useTabStore((s) => s.openTab)
 
-  const sessions = useSessionStore((s) => s.sessions)
-  const currentSession = useMemo(() => sessions.find((s) => s.id === sessionId) || null, [sessions, sessionId])
+  // Subscribe only to the workDir of the *one* session this card belongs to,
+  // not the entire sessions array. Otherwise every chatStore tick on any
+  // other tab forces this card (and any other tab's card) to re-render.
+  const sessionWorkDir = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId)?.workDir ?? null)
+  const sessionTitle = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId)?.title ?? '')
+  // Keep `currentSession` shape only for downstream usage compat.
+  const currentSession = useMemo(
+    () => (sessionWorkDir ? { id: sessionId, title: sessionTitle, workDir: sessionWorkDir } : null),
+    [sessionId, sessionWorkDir, sessionTitle],
+  )
 
   const [skillNames, setSkillNames] = useState<string[]>([])
 
